@@ -214,6 +214,7 @@ const ICONS = {
   reset:
     "M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3Z",
   check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
+  close: "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
   alert:
     "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
 };
@@ -568,7 +569,7 @@ class VacuumHudCard extends HTMLElement {
     this._timers = {};
     this._selected = []; // area ids picked for a room clean, in tap order
     this._rooms = null; // { entity, status: "loading" | "ok" | "error", areas }
-    this._zoneMode = false;
+    this._mode = null; // tool open on the map: "rooms" | "zone"
     this._zone = null; // [x1, y1, x2, y2] in vacuum coordinates
     this._drag = null; // { a: [x, y], b: [x, y] } in map pixels while drawing
   }
@@ -678,16 +679,20 @@ class VacuumHudCard extends HTMLElement {
         break;
       }
       case "zone-mode":
-        this._zoneMode = !this._zoneMode;
+      case "rooms-mode": {
+        const mode = action === "zone-mode" ? "zone" : "rooms";
+        this._mode = this._mode === mode ? null : mode;
         this._zone = null;
         this._drag = null;
+        this._selected = [];
         this._render();
         break;
+      }
       case "clean-zone": {
         const svc = this._zoneService();
         if (!svc || !this._zone) break;
         this._call(svc[0], svc[1], { zone: [this._zone], repeats: 1 }, { entity_id });
-        this._zoneMode = false;
+        this._mode = null;
         this._zone = null;
         this._render();
         break;
@@ -696,6 +701,7 @@ class VacuumHudCard extends HTMLElement {
         if (!this._selected.length) break;
         this._call("vacuum", "clean_area", { cleaning_area_id: [...this._selected] }, { entity_id });
         this._selected = [];
+        if (this._mode === "rooms") this._mode = null;
         this._render();
         break;
     }
@@ -817,9 +823,12 @@ class VacuumHudCard extends HTMLElement {
       <div class="map-wrap divider">
         <div class="floors-slot"></div>
         <div class="map clickable" data-action="more-info">
-          <div class="map-frame"><img alt=""><div class="zone-box" hidden></div></div>
+          <div class="map-frame">
+            <img alt=""><div class="zone-box" hidden></div>
+            <div class="map-tools"></div>
+            <div class="map-panel" data-action="noop" hidden></div>
+          </div>
         </div>
-        <div class="zone-slot"></div>
         <div class="rooms-slot"></div>
       </div>`;
     this._els = {
@@ -832,7 +841,8 @@ class VacuumHudCard extends HTMLElement {
       mapImg: map.querySelector("img"),
       rooms: map.querySelector(".rooms-slot"),
       floors: map.querySelector(".floors-slot"),
-      zone: map.querySelector(".zone-slot"),
+      tools: map.querySelector(".map-tools"),
+      panel: map.querySelector(".map-panel"),
       zoneBox: map.querySelector(".zone-box"),
       mapFrame: map.querySelector(".map-frame"),
       sec: {},
@@ -865,7 +875,9 @@ class VacuumHudCard extends HTMLElement {
     return [fx * img.naturalWidth, fy * img.naturalHeight];
   }
   _zoneDown(ev) {
-    if (!this._zoneMode || !this._calib) return;
+    if (this._mode !== "zone" || !this._calib) return;
+    // The buttons on the map are buttons, not the start of a zone.
+    if (ev.target.closest && ev.target.closest("button")) return;
     const pt = this._mapPoint(ev);
     if (!pt) return;
     ev.preventDefault();
@@ -909,7 +921,7 @@ class VacuumHudCard extends HTMLElement {
       const [x1, y1, x2, y2] = this._zone;
       px = [this._calib.toMap(x1, y1), this._calib.toMap(x2, y2)];
     }
-    if (!px || !this._zoneMode || !img.naturalWidth) {
+    if (!px || this._mode !== "zone" || !img.naturalWidth) {
       box.hidden = true;
       return;
     }
@@ -1110,36 +1122,19 @@ class VacuumHudCard extends HTMLElement {
     els.mapBox.hidden = !mapUrl;
     els.mapBox.dataset.value = mapId || "";
 
-    // Zone cleaning: draw a rectangle on the map.
+    // Room and zone cleaning sit as buttons on the map, so they don't make
+    // the card longer. Without a map image, rooms go below as a list.
     this._calib = calibration(mapSt);
-    const zoneOk = !!(mapUrl && this._calib && this._zoneService() && isUsable(vac) && c.show_zone !== false);
-    if (!zoneOk) {
-      this._zoneMode = false;
+    const onMap = !!mapUrl;
+    const zoneOk = !!(onMap && this._calib && this._zoneService() && isUsable(vac) && c.show_zone !== false);
+    const roomsOk = !!(vac && has(F.CLEAN_AREA) && c.show_rooms !== false);
+    if ((this._mode === "zone" && !zoneOk) || (this._mode === "rooms" && !(roomsOk && onMap))) {
+      this._mode = null;
       this._zone = null;
     }
-    // While drawing, a tap on the map draws instead of opening its details.
-    if (this._zoneMode) els.mapBox.removeAttribute("data-action");
-    else els.mapBox.setAttribute("data-action", "more-info");
-    els.mapBox.classList.toggle("drawing", this._zoneMode);
-    let zone = "";
-    if (zoneOk) {
-      const zoneIc = `<svg class="ic" width="16" height="16" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.5"/></svg>`;
-      zone = !this._zoneMode
-        ? `<button class="pill" data-action="zone-mode">${zoneIc}${esc(S.labels.zone)}</button>`
-        : `<div class="zone-bar">
-            ${this._zone
-              ? `<button class="clean-btn" data-action="clean-zone">${icon("play", 16)}<span>${esc(S.labels.cleanZone)}</span></button>`
-              : `<span class="note">${esc(S.labels.zoneHint)}</span>`}
-            <button class="pill" data-action="zone-mode">${esc(S.labels.cancel)}</button>
-          </div>`;
-    }
-    this._patch(els.zone, zone);
-    els.zone.hidden = !zone;
-    this._drawZone();
-    this._setMapImage(mapUrl);
 
-    let rooms = "";
-    if (vac && has(F.CLEAN_AREA) && c.show_rooms !== false) {
+    let roomsBody = "";
+    if (roomsOk) {
       if (!this._rooms || this._rooms.entity !== c.entity) this._loadRooms();
       const r = this._rooms;
       const known = this._hass.areas || {};
@@ -1151,15 +1146,13 @@ class VacuumHudCard extends HTMLElement {
       if (floor && r.knownFloors.has(floor)) areas = areas.filter((a) => (r.floors[a] || []).includes(floor));
       this._selected = this._selected.filter((a) => areas.includes(a));
       if (r.status === "error") {
-        rooms = `<div class="note">${esc(S.labels.roomsError)}</div>`;
+        roomsBody = `<div class="note">${esc(S.labels.roomsError)}</div>`;
       } else if (r.status === "ok" && !areas.length) {
         const hint = mapped ? S.labels.noRoomsFloor : S.labels.noRooms;
-        rooms = `<div class="note clickable" data-action="more-info" data-value="${esc(c.entity)}">${esc(hint)}</div>`;
+        roomsBody = `<div class="note clickable" data-action="more-info" data-value="${esc(c.entity)}">${esc(hint)}</div>`;
       } else if (areas.length) {
         const n = this._selected.length;
-        const usable = isUsable(vac);
-        rooms = `
-          <div class="section-label">${esc(S.labels.rooms)}</div>
+        roomsBody = `
           <div class="rooms">
             <div class="pills">${areas
               .map((a) => {
@@ -1168,16 +1161,48 @@ class VacuumHudCard extends HTMLElement {
                 return `<button class="pill room${this._selected.includes(a) ? " on" : ""}" data-action="room" data-value="${esc(a)}">${ic}${esc(ar.name || a)}</button>`;
               })
               .join("")}</div>
-            <button class="clean-btn" data-action="clean-rooms" ${n && usable ? "" : "disabled"}>
+            <button class="clean-btn" data-action="clean-rooms" ${n && isUsable(vac) ? "" : "disabled"}>
               ${icon("play", 16)}<span>${esc(S.labels.clean)}${n ? ` (${n})` : ""}</span>
             </button>
           </div>`;
       }
     }
+
+    // While a tool is open, a tap on the map doesn't open its details.
+    if (this._mode) els.mapBox.removeAttribute("data-action");
+    else els.mapBox.setAttribute("data-action", "more-info");
+    els.mapBox.classList.toggle("tool", !!this._mode);
+    els.mapBox.classList.toggle("drawing", this._mode === "zone");
+
+    const btn = (action, label, inner, cls = "") =>
+      `<button class="map-btn${cls}" data-action="${action}" title="${esc(label)}" aria-label="${esc(label)}">${inner}</button>`;
+    const zoneIc = `<svg class="ic" width="18" height="18" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.5"/></svg>`;
+    const roomsIc = `<svg class="ic" width="18" height="18" viewBox="0 0 24 24"><path d="M3 3h18v18H3zM3 12h7M10 3v5M10 16v5M14 12h7" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+    let tools = "";
+    let panel = "";
+    if (onMap) {
+      if (this._mode === "zone") {
+        tools = (this._zone ? btn("clean-zone", S.labels.cleanZone, icon("play", 18), " go") : "") + btn("zone-mode", S.labels.cancel, icon("close", 18));
+        if (!this._zone) panel = `<div class="map-hint">${esc(S.labels.zoneHint)}</div>`;
+      } else if (this._mode === "rooms") {
+        tools = btn("rooms-mode", S.labels.cancel, icon("close", 18));
+        panel = roomsBody;
+      } else {
+        tools = (roomsOk ? btn("rooms-mode", S.labels.rooms, roomsIc) : "") + (zoneOk ? btn("zone-mode", S.labels.zone, zoneIc) : "");
+      }
+    }
+    this._patch(els.tools, tools);
+    this._patch(els.panel, panel);
+    els.panel.hidden = !panel;
+    els.panel.classList.toggle("hint", this._mode === "zone");
+    this._drawZone();
+    this._setMapImage(mapUrl);
+
+    const rooms = !onMap && roomsBody ? `<div class="section-label">${esc(S.labels.rooms)}</div>${roomsBody}` : "";
     this._patch(els.rooms, rooms);
     els.rooms.hidden = !rooms;
     els.floors.hidden = !floors;
-    html.map = mapUrl || rooms || floors || zone ? "map" : "";
+    html.map = mapUrl || rooms || floors ? "map" : "";
 
     // Consumables
     const rows = CONSUMABLES.filter((x) => c[x.key])
@@ -1299,9 +1324,18 @@ const STYLE = `
   .map { display: flex; justify-content: center; padding: 4px; }
   .map-frame { position: relative; max-width: 100%; }
   .map img { display: block; max-width: 100%; max-height: 320px; border-radius: 6px; -webkit-user-drag: none; user-select: none; }
-  .map.drawing { cursor: crosshair; touch-action: none; background: none; }
+  .map.tool, .map.tool:hover { cursor: default; background: none; }
+  .map.drawing { cursor: crosshair; touch-action: none; }
   .zone-box { position: absolute; border: 2px solid ${COLORS.info}; background: rgba(59,130,196,.18); border-radius: 3px; pointer-events: none; box-sizing: border-box; }
-  .zone-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .map-tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 6px; }
+  .map-btn { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--card-background-color, #fff); color: var(--primary-text-color, #1c2128); border: 1px solid var(--divider-color, rgba(0,0,0,.12)); box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+  .map-btn:hover { filter: brightness(.95); }
+  .map-btn.go { background: ${COLORS.low}; border-color: ${COLORS.low}; color: #fff; }
+  .map-panel { position: absolute; left: 6px; right: 6px; bottom: 6px; max-height: calc(100% - 50px); overflow: auto; padding: 8px; border-radius: 8px; background: var(--card-background-color, #fff); box-shadow: 0 2px 8px rgba(0,0,0,.22); cursor: default; box-sizing: border-box; }
+  .map-panel .rooms { flex-direction: column; align-items: stretch; gap: 8px; }
+  .map-panel .clean-btn { align-self: flex-end; }
+  .map-panel.hint { pointer-events: none; left: 50%; right: auto; transform: translateX(-50%); padding: 0; background: none; box-shadow: none; overflow: visible; }
+  .map-hint { white-space: nowrap; font-size: 11px; color: #fff; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; }
   .rooms { display: flex; align-items: flex-end; gap: 10px; }
   .rooms .pills { flex: 1; min-width: 0; }
   .clean-btn { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: ${COLORS.low}; color: #fff; transition: background .15s ease; }

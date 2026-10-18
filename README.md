@@ -121,9 +121,12 @@ you mapped to the vacuum's segments: open the vacuum's more-info dialog and map
 them under **Clean areas**. Until you do, the card shows a hint that opens that
 dialog.
 
+Room and zone cleaning are buttons in the map's corner, so they don't make the
+card longer (without a map image, the rooms are listed below instead). The
+rooms button opens a panel over the map: tap one or more rooms, then **Clean**.
 When the maps have names Home Assistant knows from the area mapping, only the
 rooms of the selected map are offered, since vacuums ignore rooms on another
-map. Tap one or more rooms, then **Clean**. They're sent in the order you tapped
+map. They're sent in the order you tapped
 them, though not every vacuum follows that order. With `rooms` you can limit and
 order the rooms the card offers:
 
@@ -137,7 +140,7 @@ rooms:
 
 ### Zone cleaning
 
-Tap **Zone**, drag a rectangle on the map, then **Clean zone**. It needs a map
+Tap the zone button on the map, drag a rectangle, then the green play button. It needs a map
 entity with `calibration_points` (to turn image pixels into the vacuum's
 coordinates) and an integration with a zone cleaning action: Dreame Vacuum
 (`dreame_vacuum.vacuum_clean_zone`) or Xiaomi Miio
