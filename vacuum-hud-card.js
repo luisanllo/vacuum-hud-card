@@ -238,7 +238,7 @@ const CONSUMABLES = [
 // Sections in display order. Each one keeps its own container, so an update
 // only touches the parts that changed (the robot keeps spinning, the map
 // image doesn't reload, the bars animate).
-const SECTIONS = ["hero", "banner", "controls", "pills", "stats", "map", "cons"];
+const SECTIONS = ["hero", "banner", "controls", "map", "pills", "stats", "cons"];
 
 const CONFIRM_MS = 3000;
 // A second tap that comes this soon after the first is a double-click, not a
