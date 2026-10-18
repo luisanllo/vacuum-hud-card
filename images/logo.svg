@@ -1,0 +1,26 @@
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b5a8f"/>
+      <stop offset="100%" stop-color="#16233b"/>
+    </linearGradient>
+    <clipPath id="tile"><rect width="128" height="128" rx="28"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="128" height="128" fill="url(#bg)"/>
+    <path d="M0 108Q64 96 128 108V128H0Z" fill="#ffffff" opacity="0.12"/>
+  </g>
+  <g stroke="#ffffff" stroke-opacity="0.35" stroke-width="2.4" stroke-linecap="round">
+    <path d="M100 52h16M104 62h12M100 72h14"/>
+  </g>
+  <circle cx="62" cy="62" r="36" fill="#ffffff"/>
+  <path d="M33.5 44A36 36 0 0 1 90.5 44" fill="none" stroke="#16233b" stroke-opacity="0.18" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="62" cy="62" r="25" fill="#3b5a8f" opacity="0.14"/>
+  <rect x="55" y="32" width="14" height="5" rx="2.5" fill="#3b5a8f"/>
+  <circle cx="62" cy="68" r="7" fill="#3b5a8f"/>
+  <g stroke="#f5a623" stroke-width="3.6" stroke-linecap="round">
+    <path d="M36 38V24M36 38l12 7M36 38l-12 7"/>
+  </g>
+  <circle cx="36" cy="38" r="4" fill="#f5a623"/>
+  <rect x="38" y="104" width="48" height="6" rx="3" fill="#ffffff" opacity="0.55"/>
+</svg>
