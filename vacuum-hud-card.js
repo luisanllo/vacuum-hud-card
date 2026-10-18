@@ -1,8 +1,8 @@
 /* Vacuum HUD Card — custom Lovelace card for Home Assistant
  * Instrument-panel style card for robot vacuums: state, battery, controls,
- * suction, mop water level, last clean stats and consumables (with reset)
- * in one panel. Works with any `vacuum` entity; every extra block is
- * optional and hides itself when not configured.
+ * suction, mop water level, last clean stats, map with room cleaning and
+ * consumables (with reset) in one panel. Works with any `vacuum` entity;
+ * every extra block is optional and hides itself when not configured.
  *
  * Install via HACS (recommended):
  *   HACS -> three-dot menu -> Custom repositories -> add this repository
@@ -19,7 +19,7 @@
  * English.
  */
 
-const VERSION = "0.1.1";
+const VERSION = "0.2.0";
 
 const STRINGS = {
   en: {
@@ -27,6 +27,7 @@ const STRINGS = {
       general: "General",
       status: "Status",
       consumables: "Consumables",
+      map: "Map and rooms",
       display: "Display",
       entity: "Vacuum",
       name: "Name (optional)",
@@ -35,16 +36,21 @@ const STRINGS = {
       cleanArea: "Clean area sensor",
       cleanTime: "Clean time sensor",
       waterLevel: "Mop water level (select)",
-      filter: "Filter life (%)",
+      filter: "Filter life",
       filterReset: "Filter reset button",
-      sideBrush: "Side brush life (%)",
+      sideBrush: "Side brush life",
       sideBrushReset: "Side brush reset button",
-      mainBrush: "Main brush life (%)",
+      mainBrush: "Main brush life",
       mainBrushReset: "Main brush reset button",
-      mop: "Mop life (%)",
+      mop: "Mop life",
       mopReset: "Mop reset button",
+      sensorCleaning: "Sensor cleaning",
+      sensorCleaningReset: "Sensor cleaning reset button",
+      mapEntity: "Map (camera or image entity)",
+      rooms: "Rooms to show (optional, every mapped area by default)",
       showControls: "Show control buttons",
       showFanSpeed: "Show suction selector",
+      showRooms: "Show room cleaning",
     },
     states: {
       cleaning: "Cleaning",
@@ -76,10 +82,16 @@ const STRINGS = {
       sideBrush: "Side brush",
       mainBrush: "Main brush",
       mop: "Mop",
+      sensors: "Sensors",
       reset: "Reset",
       confirmReset: "Reset?",
       done: "Done",
       notFound: "Entity not found",
+      locked: "Can't be changed right now",
+      rooms: "Rooms",
+      clean: "Clean",
+      noRooms: "Map the vacuum's segments to areas to send it to a room. Tap here to open its details.",
+      roomsError: "Couldn't read the vacuum's rooms",
     },
   },
   es: {
@@ -87,6 +99,7 @@ const STRINGS = {
       general: "General",
       status: "Estado",
       consumables: "Consumibles",
+      map: "Mapa y habitaciones",
       display: "Pantalla",
       entity: "Aspirador",
       name: "Nombre (opcional)",
@@ -95,16 +108,21 @@ const STRINGS = {
       cleanArea: "Sensor de área limpiada",
       cleanTime: "Sensor de tiempo de limpieza",
       waterLevel: "Agua de la mopa (select)",
-      filter: "Vida del filtro (%)",
+      filter: "Vida del filtro",
       filterReset: "Botón de reset del filtro",
-      sideBrush: "Vida del cepillo lateral (%)",
+      sideBrush: "Vida del cepillo lateral",
       sideBrushReset: "Botón de reset del cepillo lateral",
-      mainBrush: "Vida del cepillo principal (%)",
+      mainBrush: "Vida del cepillo principal",
       mainBrushReset: "Botón de reset del cepillo principal",
-      mop: "Vida de la mopa (%)",
+      mop: "Vida de la mopa",
       mopReset: "Botón de reset de la mopa",
+      sensorCleaning: "Limpieza de sensores",
+      sensorCleaningReset: "Botón de reset de la limpieza de sensores",
+      mapEntity: "Mapa (entidad camera o image)",
+      rooms: "Habitaciones a mostrar (opcional; por defecto, todas las áreas asociadas)",
       showControls: "Mostrar los botones de control",
       showFanSpeed: "Mostrar el selector de succión",
+      showRooms: "Mostrar la limpieza por habitaciones",
     },
     states: {
       cleaning: "Limpiando",
@@ -136,10 +154,16 @@ const STRINGS = {
       sideBrush: "Cepillo lateral",
       mainBrush: "Cepillo principal",
       mop: "Mopa",
+      sensors: "Sensores",
       reset: "Resetear",
       confirmReset: "¿Resetear?",
       done: "Hecho",
       notFound: "No se encuentra la entidad",
+      locked: "No se puede cambiar ahora",
+      rooms: "Habitaciones",
+      clean: "Limpiar",
+      noRooms: "Asocia los segmentos del robot a áreas para mandarlo a una habitación. Toca aquí para abrir sus detalles.",
+      roomsError: "No se han podido leer las habitaciones del robot",
     },
   },
 };
@@ -162,7 +186,7 @@ const STATE_COLORS = {
 };
 
 // VacuumEntityFeature bits
-const F = { PAUSE: 4, STOP: 8, RETURN_HOME: 16, FAN_SPEED: 32, LOCATE: 512, START: 8192 };
+const F = { PAUSE: 4, STOP: 8, RETURN_HOME: 16, FAN_SPEED: 32, LOCATE: 512, START: 8192, CLEAN_AREA: 16384 };
 
 const ICONS = {
   play: "M8,5.14V19.14L19,12.14L8,5.14Z",
@@ -183,9 +207,23 @@ const CONSUMABLES = [
   { key: "side_brush", reset: "side_brush_reset", label: "sideBrush" },
   { key: "main_brush", reset: "main_brush_reset", label: "mainBrush" },
   { key: "mop", reset: "mop_reset", label: "mop" },
+  { key: "sensor_cleaning", reset: "sensor_cleaning_reset", label: "sensors" },
 ];
 
+// Sections in display order. Each one keeps its own container, so an update
+// only touches the parts that changed (the robot keeps spinning, the map
+// image doesn't reload, the bars animate).
+const SECTIONS = ["hero", "banner", "controls", "pills", "stats", "map", "cons"];
+
 const CONFIRM_MS = 3000;
+// A second tap that comes this soon after the first is a double-click, not a
+// confirmation, so it doesn't reset anything.
+const CONFIRM_MIN_MS = 400;
+
+// Text states that mean "no fault" on fault/error sensors (Roborock reports
+// `none`, Dreame `no_error`, binary sensors `off`).
+const OK_STATES = new Set(["", "off", "0", "ok", "none", "no_error", "no error", "normal", "unavailable", "unknown"]);
+const DURATION_UNITS = new Set(["s", "min", "h", "d"]);
 
 function detectLang(hass) {
   const raw =
@@ -218,8 +256,40 @@ function num(st) {
   return isNaN(v) ? null : v;
 }
 
+function isUsable(st) {
+  return !!st && st.state !== "unavailable" && st.state !== "unknown";
+}
+
+// A button's state is the time it was last pressed, so "unknown" (never
+// pressed) is fine; only "unavailable" means it can't be pressed (Dreame
+// disables its reset buttons while the part is at 100 %).
+function isPressable(st) {
+  return !!st && st.state !== "unavailable";
+}
+
 function isOn(st) {
-  return !!st && st.state !== "off" && st.state !== "unavailable" && st.state !== "unknown" && st.state !== "0" && st.state !== "ok";
+  return !!st && !OK_STATES.has(String(st.state).toLowerCase());
+}
+
+function isDuration(st) {
+  return !!st && (st.attributes.device_class === "duration" || DURATION_UNITS.has(st.attributes.unit_of_measurement));
+}
+
+// Consumable sensors come as a percentage left (Dreame, Ecovacs, Tuya) or as
+// time left (Roborock, Xiaomi Miio). Time left has no known maximum, so it's
+// shown as is instead of being drawn as a percentage bar.
+function lifeKind(st) {
+  if (num(st) == null) return null;
+  const unit = st.attributes.unit_of_measurement;
+  if (unit === "%" || unit == null || unit === "") return "pct";
+  if (isDuration(st)) return "time";
+  return null;
+}
+
+function deviceName(hass, entityId) {
+  const ent = hass.entities && hass.entities[entityId];
+  const dev = ent && ent.device_id && hass.devices && hass.devices[ent.device_id];
+  return dev ? dev.name_by_user || dev.name || "" : "";
 }
 
 // Top-down robot: the side brush spins while cleaning, a ring pulses while
@@ -259,40 +329,65 @@ function guessEntities(hass, vacuumId) {
   const reg = hass && hass.entities;
   const dev = reg && reg[vacuumId] && reg[vacuumId].device_id;
   if (!dev) return out;
-  const siblings = Object.values(reg).filter((e) => e.device_id === dev && e.entity_id !== vacuumId);
+  const siblings = Object.values(reg).filter((e) => e.device_id === dev && e.entity_id !== vacuumId && hass.states[e.entity_id]);
+  // Match on the object id and the name, never on the domain: every sensor's
+  // entity id starts with "sensor.".
   const text = (id) => {
     const st = hass.states[id];
-    return `${id} ${(st && st.attributes.friendly_name) || ""}`.toLowerCase();
+    return `${id.split(".")[1]} ${(st && st.attributes.friendly_name) || ""}`.toLowerCase();
   };
-  const find = (domain, test) => {
-    const hit = siblings.find((e) => e.entity_id.startsWith(domain + ".") && test(hass.states[e.entity_id], text(e.entity_id)));
-    return hit && hit.entity_id;
+  // First match in registry order, or the best-ranked one when `rank` is given.
+  const pick = (domain, test, rank) => {
+    const hits = siblings
+      .map((e) => e.entity_id)
+      .filter((id) => id.startsWith(domain + ".") && test(hass.states[id], text(id)));
+    if (rank) hits.sort((a, b) => rank(hass.states[b], text(b)) - rank(hass.states[a], text(a)));
+    return hits[0];
   };
-  const dc = (st, cls) => !!st && st.attributes.device_class === cls;
+  const dc = (st, cls) => st.attributes.device_class === cls;
   const set = (key, id) => {
     if (id) out[key] = id;
   };
-  set("battery", find("sensor", (st) => dc(st, "battery")));
-  set("problem", find("binary_sensor", (st) => dc(st, "problem")));
-  set("clean_area", find("sensor", (st, t) => dc(st, "area") || /clean.?area|área/.test(t)));
-  set("clean_time", find("sensor", (st, t) => /clean.?time|tiempo/.test(t)));
-  set("water_level", find("select", (st, t) => /water|mop|fregad|agua|scrub/.test(t)));
+  const TOTAL = /total|lifetime|histor/;
+  const LEFT = /left|restante|remaining/;
+  set("battery", pick("sensor", (st) => dc(st, "battery")));
+  set(
+    "problem",
+    pick("binary_sensor", (st, t) => dc(st, "problem") && /problem|error|fault/.test(t)) ||
+      pick("sensor", (st, t) => /error|fault/.test(t) && !/count|time|code/.test(t)) ||
+      pick("binary_sensor", (st) => dc(st, "problem"))
+  );
+  set("clean_area", pick("sensor", (st, t) => (dc(st, "area") || /clean(ing|ed)?.?area|área/.test(t)) && !TOTAL.test(t)));
+  set(
+    "clean_time",
+    pick("sensor", (st, t) => /clean(ing)?.?time|tiempo de limpieza/.test(t) && !TOTAL.test(t) && !LEFT.test(t))
+  );
+  set("water_level", pick("select", (st, t) => /water|agua|mop|scrub|fregad/.test(t) && !/room|habitaci|mode|modo/.test(t)));
   const parts = {
     filter: /filter|filtro/,
-    side_brush: /side|edge|lateral/,
-    main_brush: /main|roll|rodillo|principal/,
+    side_brush: /side.?brush|edge|lateral/,
+    main_brush: /main.?brush|roll|rodillo|principal/,
     mop: /mop|mopa/,
+    sensor_cleaning: /(^|[_ ])sensors?([_ ]|$)|limpieza de sensores/,
   };
+  // Prefer a percentage over a time left; skip anything that isn't a
+  // consumable life (e.g. Dreame's "mop pad installed" sensor).
+  const life = (st) => ({ pct: 2, time: 1 })[lifeKind(st)] || 0;
   for (const [key, re] of Object.entries(parts)) {
-    set(key, find("sensor", (st, t) => re.test(t)));
-    set(`${key}_reset`, find("button", (st, t) => re.test(t)));
+    set(key, pick("sensor", (st, t) => re.test(t) && life(st) > 0 && !TOTAL.test(t), life));
+    set(`${key}_reset`, pick("button", (st, t) => re.test(t) && /reset|restablec|reinici/.test(t)));
   }
+  set(
+    "map",
+    pick("camera", (st, t) => /map|mapa/.test(t) && !/data|wifi/.test(t), (st, t) => (/_map\b/.test(t) ? 1 : 0)) ||
+      pick("image", () => true)
+  );
   return out;
 }
 
 class VacuumHudCardEditor extends HTMLElement {
   _withDefaults(config) {
-    return { show_controls: true, show_fan_speed: true, ...(config || {}) };
+    return { show_controls: true, show_fan_speed: true, show_rooms: true, ...(config || {}) };
   }
   setConfig(config) {
     this._config = this._withDefaults(config);
@@ -334,6 +429,13 @@ class VacuumHudCardEditor extends HTMLElement {
         ],
       },
       {
+        type: "expandable", name: "map", title: E.map, flatten: true,
+        schema: [
+          ent("map", E.mapEntity, ["camera", "image"]),
+          { name: "rooms", label: E.rooms, selector: { area: { multiple: true } } },
+        ],
+      },
+      {
         type: "expandable", name: "consumables", title: E.consumables, flatten: true,
         schema: [
           ent("filter", E.filter, "sensor"),
@@ -344,6 +446,8 @@ class VacuumHudCardEditor extends HTMLElement {
           ent("main_brush_reset", E.mainBrushReset, ["button", "script"]),
           ent("mop", E.mop, "sensor"),
           ent("mop_reset", E.mopReset, ["button", "script"]),
+          ent("sensor_cleaning", E.sensorCleaning, "sensor"),
+          ent("sensor_cleaning_reset", E.sensorCleaningReset, ["button", "script"]),
         ],
       },
       {
@@ -351,6 +455,7 @@ class VacuumHudCardEditor extends HTMLElement {
         schema: [
           { name: "show_controls", label: E.showControls, selector: { boolean: {} } },
           { name: "show_fan_speed", label: E.showFanSpeed, selector: { boolean: {} } },
+          { name: "show_rooms", label: E.showRooms, selector: { boolean: {} } },
         ],
       },
     ];
@@ -385,10 +490,18 @@ class VacuumHudCard extends HTMLElement {
   constructor() {
     super();
     this._confirm = {}; // reset entity -> "confirm" | "done"
+    this._armedAt = {};
     this._timers = {};
+    this._selected = []; // area ids picked for a room clean, in tap order
+    this._rooms = null; // { entity, status: "loading" | "ok" | "error", areas }
   }
   setConfig(config) {
     if (!config || !config.entity) throw new Error("vacuum-hud-card: 'entity' is required");
+    if (this._config && this._config.entity !== config.entity) {
+      this._rooms = null;
+      this._selected = [];
+      this._speedsSeen = false;
+    }
     this._config = config;
     if (!this.shadowRoot) {
       this.attachShadow({ mode: "open" });
@@ -398,6 +511,12 @@ class VacuumHudCard extends HTMLElement {
     this._render();
   }
   set hass(hass) {
+    // A registry change (e.g. the rooms were just mapped to areas) brings a
+    // new `entities` object: read the rooms again.
+    if (this._hass && hass.entities !== this._hass.entities && this._rooms && this._rooms.status !== "loading") {
+      this._rooms = null;
+      this._sig = null;
+    }
     this._hass = hass;
     // Only re-render when one of our entities (or the language) changed.
     const sig = this._signature();
@@ -405,7 +524,7 @@ class VacuumHudCard extends HTMLElement {
     this._render();
   }
   getCardSize() {
-    return 7;
+    return this._config && this._config.map ? 12 : 7;
   }
   getGridOptions() {
     return { columns: 12, min_columns: 6 };
@@ -417,7 +536,7 @@ class VacuumHudCard extends HTMLElement {
   }
   _ids() {
     const c = this._config;
-    const keys = ["entity", "battery", "problem", "clean_area", "clean_time", "water_level"];
+    const keys = ["entity", "battery", "problem", "clean_area", "clean_time", "water_level", "map"];
     CONSUMABLES.forEach((x) => keys.push(x.key, x.reset));
     return keys.map((k) => c[k]).filter(Boolean);
   }
@@ -435,8 +554,12 @@ class VacuumHudCard extends HTMLElement {
     const id = this._config[key];
     return id ? this._hass.states[id] : undefined;
   }
-  _call(domain, service, data) {
-    this._hass.callService(domain, service, data);
+  _call(domain, service, data, target) {
+    Promise.resolve(this._hass.callService(domain, service, data, target)).catch((err) =>
+      this.dispatchEvent(
+        new CustomEvent("hass-notification", { detail: { message: (err && err.message) || String(err) }, bubbles: true, composed: true })
+      )
+    );
   }
   _moreInfo(entityId) {
     if (!entityId || !this._hass.states[entityId]) return;
@@ -465,11 +588,26 @@ class VacuumHudCard extends HTMLElement {
       case "reset":
         this._reset(value);
         break;
+      case "room": {
+        const i = this._selected.indexOf(value);
+        if (i >= 0) this._selected.splice(i, 1);
+        else this._selected.push(value);
+        this._render();
+        break;
+      }
+      case "clean-rooms":
+        if (!this._selected.length) break;
+        this._call("vacuum", "clean_area", { cleaning_area_id: [...this._selected] }, { entity_id });
+        this._selected = [];
+        this._render();
+        break;
     }
   }
   // Resetting a consumable needs two taps: the first arms it for a few
   // seconds, the second presses the button.
   _reset(id) {
+    if (!isPressable(this._hass.states[id])) return;
+    if (this._confirm[id] === "confirm" && Date.now() - this._armedAt[id] < CONFIRM_MIN_MS) return;
     clearTimeout(this._timers[id]);
     if (this._confirm[id] === "confirm") {
       const domain = id.split(".")[0];
@@ -478,12 +616,32 @@ class VacuumHudCard extends HTMLElement {
       this._confirm[id] = "done";
     } else {
       this._confirm[id] = "confirm";
+      this._armedAt[id] = Date.now();
     }
     this._render();
     this._timers[id] = setTimeout(() => {
       delete this._confirm[id];
       this._render();
     }, CONFIRM_MS);
+  }
+  // Areas the vacuum can be sent to: the ones mapped to its segments in the
+  // entity registry (Home Assistant's own "Clean areas" mapping).
+  _loadRooms() {
+    const entity = this._config.entity;
+    this._rooms = { entity, status: "loading", areas: [] };
+    this._hass
+      .callWS({ type: "config/entity_registry/get", entity_id: entity })
+      .then((entry) => {
+        const mapping = (entry && entry.options && entry.options.vacuum && entry.options.vacuum.area_mapping) || {};
+        const areas = Object.keys(mapping).filter((a) => Array.isArray(mapping[a]) && mapping[a].length);
+        return { entity, status: "ok", areas };
+      })
+      .catch(() => ({ entity, status: "error", areas: [] }))
+      .then((rooms) => {
+        if (!this._config || this._config.entity !== entity) return;
+        this._rooms = rooms;
+        this._render();
+      });
   }
   _stateLabel(st, S) {
     if (!st) return S.labels.notFound;
@@ -503,12 +661,80 @@ class VacuumHudCard extends HTMLElement {
   _fmt(st) {
     if (!st) return { v: "—", u: "" };
     const v = num(st);
-    const u = st.attributes.unit_of_measurement || "";
-    if (v == null) return { v: esc(st.state), u: "" };
-    return { v: esc(Math.round(v * 10) / 10), u: esc(u) };
+    if (v == null) return { v: esc(this._hass.formatEntityState ? this._hass.formatEntityState(st) : st.state), u: "" };
+    // Home Assistant's own formatting: the user's decimals and number format,
+    // and durations as "1 h 12 min".
+    if (this._hass.formatEntityStateToParts) {
+      const parts = this._hass.formatEntityStateToParts(st);
+      const join = (fn) => parts.filter(fn).map((p) => p.value).join("").trim();
+      return { v: esc(join((p) => p.type !== "unit")), u: esc(join((p) => p.type === "unit")) };
+    }
+    return { v: esc(Math.round(v * 10) / 10), u: esc(st.attributes.unit_of_measurement || "") };
+  }
+  _build() {
+    this.shadowRoot.innerHTML = `
+      <style>${STYLE}</style>
+      <ha-card>
+        <div class="title"></div>
+        ${SECTIONS.map((k) => `<div class="sec" data-sec="${k}"></div>`).join("")}
+      </ha-card>`;
+    const root = this.shadowRoot;
+    const hero = root.querySelector('[data-sec="hero"]');
+    hero.innerHTML = `
+      <div class="row hero divider">
+        <div class="clickable robot-wrap" data-action="more-info"></div>
+        <div class="hero-main clickable" data-action="more-info"></div>
+        <div class="battery-slot"></div>
+      </div>`;
+    const map = root.querySelector('[data-sec="map"]');
+    map.innerHTML = `
+      <div class="map-wrap divider">
+        <div class="map clickable" data-action="more-info"><img alt=""></div>
+        <div class="rooms-slot"></div>
+      </div>`;
+    this._els = {
+      title: root.querySelector(".title"),
+      robot: hero.querySelector(".robot-wrap"),
+      heroMain: hero.querySelector(".hero-main"),
+      battery: hero.querySelector(".battery-slot"),
+      mapWrap: map.firstElementChild,
+      mapBox: map.querySelector(".map"),
+      mapImg: map.querySelector("img"),
+      rooms: map.querySelector(".rooms-slot"),
+      sec: {},
+    };
+    SECTIONS.forEach((k) => (this._els.sec[k] = root.querySelector(`[data-sec="${k}"]`)));
+    this._html = new Map();
+    this._mapUrl = null;
+  }
+  // Replace an element's content only when it actually changed.
+  _patch(el, html) {
+    if (this._html.get(el) === html) return;
+    this._html.set(el, html);
+    el.innerHTML = html;
+  }
+  _setMapImage(url) {
+    const img = this._els.mapImg;
+    if (url === this._mapUrl) return;
+    this._mapUrl = url;
+    if (!url) {
+      img.removeAttribute("src");
+      return;
+    }
+    if (!img.getAttribute("src")) {
+      img.src = url;
+      return;
+    }
+    // Load the new frame off-screen first, so the map doesn't blink.
+    const next = new Image();
+    next.onload = () => {
+      if (this._mapUrl === url) img.src = url;
+    };
+    next.src = url;
   }
   _render() {
     if (!this.shadowRoot || !this._config || !this._hass) return;
+    if (!this._els) this._build();
     this._sig = this._signature();
     const lang = detectLang(this._hass);
     const S = STRINGS[lang];
@@ -518,7 +744,12 @@ class VacuumHudCard extends HTMLElement {
     const color = STATE_COLORS[state] || COLORS.neutral;
     const features = (vac && vac.attributes.supported_features) || 0;
     const has = (bit) => (features & bit) === bit;
-    const name = c.name || (vac && vac.attributes.friendly_name) || c.entity;
+    const els = this._els;
+    const html = {};
+
+    // Some integrations name the vacuum entity after its device, which makes
+    // the friendly name read "D20 Pro Plus D20 Pro Plus": use the device name.
+    els.title.textContent = c.name || deviceName(this._hass, c.entity) || (vac && vac.attributes.friendly_name) || c.entity;
 
     // Battery: dedicated sensor, else the (deprecated) vacuum attribute.
     const batSt = this._st("battery");
@@ -530,34 +761,40 @@ class VacuumHudCard extends HTMLElement {
       sub = `${S.labels.suction}: ${esc(this._speedLabel(vac, vac.attributes.fan_speed, S))}`;
     }
 
-    const hero = `
-      <div class="row hero divider">
-        <div class="clickable robot-wrap" data-action="more-info" data-value="${esc(c.entity)}">${robotSvg(state, color)}</div>
-        <div class="hero-main clickable" data-action="more-info" data-value="${esc(c.entity)}">
-          <div class="hero-state">${esc(this._stateLabel(vac, S))}</div>
-          ${sub ? `<div class="hero-sub">${sub}</div>` : ""}
-        </div>
-        ${
-          bat == null
-            ? ""
-            : `<div class="battery clickable" data-action="more-info" data-value="${esc(c.battery || c.entity)}">
-                <div class="battery-row">${batterySvg(bat, batColor)}<span class="battery-pct">${Math.round(bat)}%</span></div>
-                <div class="battery-label">${S.labels.battery}</div>
-              </div>`
-        }
-      </div>`;
+    els.robot.dataset.value = c.entity;
+    els.heroMain.dataset.value = c.entity;
+    this._patch(els.robot, robotSvg(state, color));
+    this._patch(
+      els.heroMain,
+      `<div class="hero-state">${esc(this._stateLabel(vac, S))}</div>${sub ? `<div class="hero-sub">${sub}</div>` : ""}`
+    );
+    this._patch(
+      els.battery,
+      bat == null
+        ? ""
+        : `<div class="battery clickable" data-action="more-info" data-value="${esc(c.battery || c.entity)}">
+            <div class="battery-row">${batterySvg(bat, batColor)}<span class="battery-pct">${Math.round(bat)}%</span></div>
+            <div class="battery-label">${S.labels.battery}</div>
+          </div>`
+    );
 
     // Problem banner
     const prob = this._st("problem");
-    let banner = "";
+    html.banner = "";
     if (isOn(prob) || state === "error") {
-      const d = prob && prob.attributes.description && prob.attributes.description !== "ok" ? prob.attributes.description : "";
-      const text = d || (prob && prob.state !== "on" ? prob.state : S.labels.fault);
-      banner = `<div class="banner clickable" data-action="more-info" data-value="${esc(c.problem || c.entity)}">${icon("alert", 18)}<span>${esc(text)}</span></div>`;
+      // Prefer the sensor's description, then its (translated) state; a
+      // binary sensor or a sensor that still reads "no error" says "Fault".
+      let text = S.labels.fault;
+      if (isOn(prob)) {
+        const d = prob.attributes.description;
+        if (d && !OK_STATES.has(String(d).toLowerCase())) text = d;
+        else if (prob.state !== "on") text = this._hass.formatEntityState ? this._hass.formatEntityState(prob) : prob.state;
+      }
+      html.banner = `<div class="banner clickable" data-action="more-info" data-value="${esc(c.problem || c.entity)}">${icon("alert", 18)}<span>${esc(text)}</span></div>`;
     }
 
     // Controls
-    let controls = "";
+    html.controls = "";
     if (vac && c.show_controls !== false) {
       const btns = [];
       const cleaning = state === "cleaning";
@@ -567,7 +804,7 @@ class VacuumHudCard extends HTMLElement {
       if (has(F.RETURN_HOME)) btns.push(["return_to_base", "home", S.actions.home, false]);
       if (has(F.LOCATE)) btns.push(["locate", "locate", S.actions.locate, false]);
       if (btns.length) {
-        controls = `<div class="row controls divider">${btns
+        html.controls = `<div class="row controls divider">${btns
           .map(
             ([svc, ic, label, primary]) =>
               `<button class="ctl${primary ? " primary" : ""}" data-action="vacuum" data-value="${svc}" title="${esc(label)}">
@@ -586,16 +823,29 @@ class VacuumHudCard extends HTMLElement {
           .map((o) => `<button class="pill${o === current ? " on" : ""}" data-action="${action}" data-value="${esc(o)}">${esc(fmt(o))}</button>`)
           .join("")}</div>
       </div>`;
+    const noteRow = (label, note) =>
+      `<div class="pills-block"><div class="section-label">${esc(label)}</div><div class="note">${esc(note)}</div></div>`;
     let pills = "";
     const speeds = vac && vac.attributes.fan_speed_list;
-    if (c.show_fan_speed !== false && has(F.FAN_SPEED) && Array.isArray(speeds) && speeds.length) {
-      pills += pillRow(S.labels.suction, speeds, vac.attributes.fan_speed, "fan", (o) => this._speedLabel(vac, o, S));
+    if (c.show_fan_speed !== false && vac) {
+      if (has(F.FAN_SPEED) && Array.isArray(speeds) && speeds.length) {
+        this._speedsSeen = true;
+        pills += pillRow(S.labels.suction, speeds, vac.attributes.fan_speed, "fan", (o) => this._speedLabel(vac, o, S));
+      } else if (this._speedsSeen) {
+        // Some integrations drop the suction setting for a while (Dreame does
+        // during a clean with per-room settings): say so instead of making
+        // the block vanish.
+        pills += noteRow(S.labels.suction, S.labels.locked);
+      }
     }
     const water = this._st("water_level");
-    if (water && Array.isArray(water.attributes.options)) {
+    if (water && !isUsable(water)) {
+      // e.g. no mop attached: tell it, don't offer "Unavailable" as an option.
+      pills += noteRow(S.labels.water, this._stateLabel(water, S));
+    } else if (water && Array.isArray(water.attributes.options)) {
       pills += pillRow(S.labels.water, water.attributes.options, water.state, "water", (o) => this._optionLabel(water, o, S));
     }
-    if (pills) pills = `<div class="pills-wrap divider">${pills}</div>`;
+    html.pills = pills ? `<div class="pills-wrap divider">${pills}</div>` : "";
 
     // Stats
     const stats = [];
@@ -616,54 +866,117 @@ class VacuumHudCard extends HTMLElement {
         )
       );
     }
-    const statsHtml = stats.length ? `<div class="grid divider">${stats.join("")}</div>` : "";
+    html.stats = stats.length ? `<div class="grid divider">${stats.join("")}</div>` : "";
+
+    // Map + room cleaning
+    const mapSt = this._st("map");
+    const pic = mapSt && isUsable(mapSt) && mapSt.attributes.entity_picture;
+    let mapUrl = null;
+    if (pic) {
+      // The state (or last_updated) changes with each new map frame.
+      const stamp = encodeURIComponent(mapSt.state + mapSt.last_updated);
+      const url = `${pic}${pic.includes("?") ? "&" : "?"}v=${stamp}`;
+      mapUrl = this._hass.hassUrl ? this._hass.hassUrl(url) : url;
+    }
+    els.mapBox.hidden = !mapUrl;
+    els.mapBox.dataset.value = c.map || "";
+    this._setMapImage(mapUrl);
+
+    let rooms = "";
+    if (vac && has(F.CLEAN_AREA) && c.show_rooms !== false) {
+      if (!this._rooms || this._rooms.entity !== c.entity) this._loadRooms();
+      const r = this._rooms;
+      const known = this._hass.areas || {};
+      let areas = r.areas.filter((a) => known[a]);
+      if (Array.isArray(c.rooms) && c.rooms.length) areas = c.rooms.filter((a) => areas.includes(a));
+      this._selected = this._selected.filter((a) => areas.includes(a));
+      if (r.status === "error") {
+        rooms = `<div class="note">${esc(S.labels.roomsError)}</div>`;
+      } else if (r.status === "ok" && !areas.length) {
+        rooms = `<div class="note clickable" data-action="more-info" data-value="${esc(c.entity)}">${esc(S.labels.noRooms)}</div>`;
+      } else if (areas.length) {
+        const n = this._selected.length;
+        const usable = isUsable(vac);
+        rooms = `
+          <div class="section-label">${esc(S.labels.rooms)}</div>
+          <div class="rooms">
+            <div class="pills">${areas
+              .map((a) => {
+                const ar = known[a];
+                const ic = ar.icon ? `<ha-icon icon="${esc(ar.icon)}"></ha-icon>` : "";
+                return `<button class="pill room${this._selected.includes(a) ? " on" : ""}" data-action="room" data-value="${esc(a)}">${ic}${esc(ar.name || a)}</button>`;
+              })
+              .join("")}</div>
+            <button class="clean-btn" data-action="clean-rooms" ${n && usable ? "" : "disabled"}>
+              ${icon("play", 16)}<span>${esc(S.labels.clean)}${n ? ` (${n})` : ""}</span>
+            </button>
+          </div>`;
+      }
+    }
+    this._patch(els.rooms, rooms);
+    html.map = mapUrl || rooms ? "map" : "";
 
     // Consumables
     const rows = CONSUMABLES.filter((x) => c[x.key])
       .map((x) => {
         const st = this._st(x.key);
-        const v = num(st);
-        const pct = v == null ? null : Math.max(0, Math.min(100, v));
-        const col = levelColor(pct, 30, 10);
+        const kind = lifeKind(st);
+        const pct = kind === "pct" ? Math.max(0, Math.min(100, num(st))) : null;
+        const col = kind === "pct" ? levelColor(pct, 30, 10) : COLORS.neutral;
+        let value = "—";
+        if (kind === "pct") value = Math.round(pct) + "%";
+        else if (kind === "time") value = this._hass.formatEntityState ? this._hass.formatEntityState(st) : `${st.state} ${st.attributes.unit_of_measurement || ""}`;
         const rid = c[x.reset];
         const mode = rid && this._confirm[rid];
+        const resetOk = rid && isPressable(this._hass.states[rid]);
         const resetBtn = rid
-          ? `<button class="reset${mode ? " " + mode : ""}" data-action="reset" data-value="${esc(rid)}" title="${esc(S.labels.reset)}">
+          ? `<button class="reset${mode ? " " + mode : ""}" ${resetOk ? `data-action="reset" data-value="${esc(rid)}"` : "disabled"} title="${esc(S.labels.reset)}">
               ${icon(mode === "done" ? "check" : "reset", 15)}${mode === "confirm" ? `<span>${esc(S.labels.confirmReset)}</span>` : ""}
             </button>`
           : "";
         return `<div class="cons">
           <div class="cons-main clickable" data-action="more-info" data-value="${esc(c[x.key])}">
-            <span class="cons-pct" style="color:${col}">${pct == null ? "—" : Math.round(pct) + "%"}</span>
-            <div class="track"><div class="fill" style="height:${pct || 0}%;background:${col}"></div></div>
+            <span class="cons-pct" style="color:${col}">${esc(value)}</span>
+            ${kind === "time" ? "" : `<div class="track"><div class="fill" style="height:${pct || 0}%;background:${col}"></div></div>`}
             <span class="cons-name">${esc(S.labels[x.label])}</span>
           </div>
           ${resetBtn}
         </div>`;
       })
       .join("");
-    const consHtml = rows ? `<div class="cons-wrap"><div class="section-label">${S.labels.consumables}</div><div class="cons-grid">${rows}</div></div>` : "";
+    html.cons = rows ? `<div class="cons-wrap"><div class="section-label">${S.labels.consumables}</div><div class="cons-grid">${rows}</div></div>` : "";
 
-    this.shadowRoot.innerHTML = `
-      <style>${STYLE}</style>
-      <ha-card>
-        <div class="title">${esc(name)}</div>
-        ${hero}${banner}${controls}${pills}${statsHtml}${consHtml}
-      </ha-card>`;
+    for (const k of SECTIONS) {
+      if (k === "hero") continue;
+      if (k === "map") {
+        els.sec.map.hidden = !html.map;
+        continue;
+      }
+      this._patch(els.sec[k], html[k]);
+      els.sec[k].hidden = !html[k];
+    }
+    // Whichever section ends up last drops its divider, so no line trails
+    // into the empty padding at the bottom of the card.
+    const visible = SECTIONS.filter((k) => !els.sec[k].hidden);
+    SECTIONS.forEach((k) => els.sec[k].classList.toggle("last", k === visible[visible.length - 1]));
   }
 }
 
 const STYLE = `
   :host { display: block; }
   ha-card { display: block; padding: 22px 24px; background: var(--ha-card-background, var(--card-background-color, #fff)); color: var(--primary-text-color, #1c2128); font-family: -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; border-radius: var(--ha-card-border-radius, 12px); box-shadow: var(--ha-card-box-shadow, 0 1px 3px rgba(0,0,0,.12)); border: 1px solid var(--divider-color, rgba(0,0,0,.06)); box-sizing: border-box; height: 100%; }
+  [hidden] { display: none !important; }
   .clickable { cursor: pointer; border-radius: 6px; transition: background .15s ease; }
   .clickable:hover { background: rgba(127,127,127,.12); }
   .clickable:active { background: rgba(127,127,127,.18); }
   .title { font-size: 13px; font-weight: 600; color: var(--secondary-text-color, #70788a); margin: 0 0 14px; letter-spacing: .02em; }
   .row { display: flex; }
   .divider { border-bottom: 1px solid var(--divider-color, rgba(0,0,0,.08)); }
+  .sec.last > .divider { border-bottom: 0; padding-bottom: 0; }
   .ic { fill: currentColor; display: inline-block; vertical-align: middle; flex: none; }
   .section-label { font-size: 9px; letter-spacing: .08em; color: var(--secondary-text-color, #8a92a3); margin-bottom: 7px; text-transform: uppercase; font-weight: 600; }
+  .note { font-size: 11.5px; color: var(--secondary-text-color, #70788a); padding: 2px 0; }
+  .note.clickable { padding: 4px 6px; margin: 0 -6px; }
 
   .hero { align-items: center; gap: 14px; padding-bottom: 16px; }
   .robot-wrap { flex: none; padding: 2px; }
@@ -686,7 +999,8 @@ const STYLE = `
   .hero-main { flex: 1; min-width: 0; padding: 4px 6px; }
   .hero-state { font-size: 28px; font-weight: 600; line-height: 1.1; }
   .hero-sub { font-size: 12px; color: var(--secondary-text-color, #70788a); margin-top: 5px; }
-  .battery { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; padding: 4px 6px; flex: none; }
+  .battery-slot { flex: none; }
+  .battery { text-align: right; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; padding: 4px 6px; }
   .battery-row { display: flex; align-items: center; gap: 5px; }
   .battery-pct { font-size: 15px; font-weight: 600; }
   .battery-label { font-size: 9px; color: var(--secondary-text-color, #70788a); }
@@ -694,6 +1008,7 @@ const STYLE = `
   .banner { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; background: rgba(209,72,28,.1); color: ${COLORS.danger}; font-size: 12px; font-weight: 600; }
 
   button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+  button:disabled { cursor: default; opacity: .35; }
   .controls { justify-content: space-around; gap: 8px; padding: 16px 0; }
   .ctl { display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 56px; }
   .ctl-ic { width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: 1px solid var(--divider-color, rgba(0,0,0,.12)); color: var(--primary-text-color, #1c2128); transition: background .15s ease, transform .1s ease; }
@@ -705,9 +1020,10 @@ const STYLE = `
 
   .pills-wrap { display: flex; flex-direction: column; gap: 14px; padding: 16px 0; }
   .pills { display: flex; flex-wrap: wrap; gap: 6px; }
-  .pill { font-size: 11.5px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--divider-color, rgba(0,0,0,.12)); color: var(--secondary-text-color, #70788a); transition: background .15s ease; }
+  .pill { font-size: 11.5px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--divider-color, rgba(0,0,0,.12)); color: var(--secondary-text-color, #70788a); transition: background .15s ease; display: inline-flex; align-items: center; gap: 5px; }
   .pill:hover { background: rgba(127,127,127,.12); }
   .pill.on { background: ${COLORS.info}; border-color: ${COLORS.info}; color: #fff; font-weight: 600; }
+  .pill ha-icon { --mdc-icon-size: 15px; display: inline-flex; }
 
   .grid { display: flex; flex-wrap: wrap; gap: 18px 28px; padding: 14px 0; }
   .stat { padding: 2px 6px; margin: 0 -6px; }
@@ -716,16 +1032,24 @@ const STYLE = `
   .stat-txt { font-size: 14px; }
   .stat-label { font-size: 9.5px; color: var(--secondary-text-color, #70788a); margin-top: 2px; }
 
+  .map-wrap { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }
+  .map { display: flex; justify-content: center; padding: 4px; }
+  .map img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; border-radius: 6px; }
+  .rooms { display: flex; align-items: flex-end; gap: 10px; }
+  .rooms .pills { flex: 1; min-width: 0; }
+  .clean-btn { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: ${COLORS.low}; color: #fff; transition: background .15s ease; }
+  .clean-btn:not(:disabled):hover { background: #24935c; }
+
   .cons-wrap { padding-top: 16px; }
   .cons-grid { display: flex; justify-content: space-around; gap: 4px; }
   .cons { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; min-width: 0; }
-  .cons-main { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 4px 6px; width: 100%; box-sizing: border-box; }
-  .cons-pct { font-size: 13px; font-weight: 600; }
+  .cons-main { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 4px 6px; width: 100%; box-sizing: border-box; flex: 1; }
+  .cons-pct { font-size: 13px; font-weight: 600; text-align: center; }
   .cons-name { font-size: 9.5px; color: var(--secondary-text-color, #70788a); text-align: center; line-height: 1.2; }
   .track { width: 8px; height: 40px; border-radius: 4px; background: var(--divider-color, rgba(0,0,0,.07)); overflow: hidden; display: flex; align-items: flex-end; }
   .fill { width: 100%; border-radius: 4px; transition: height .4s ease; }
   .reset { display: flex; align-items: center; gap: 4px; height: 28px; min-width: 28px; justify-content: center; border-radius: 14px; color: var(--secondary-text-color, #8a92a3); font-size: 10.5px; font-weight: 600; transition: background .15s ease; }
-  .reset:hover { background: rgba(127,127,127,.12); }
+  .reset:not(:disabled):hover { background: rgba(127,127,127,.12); }
   .reset.confirm { background: rgba(209,72,28,.12); color: ${COLORS.danger}; padding: 0 8px; font-size: 9.5px; }
   .reset.done { color: ${COLORS.low}; }
 `;
@@ -736,7 +1060,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "vacuum-hud-card",
   name: "Vacuum HUD Card",
-  description: "Instrument-panel robot vacuum card: state, battery, controls, suction, mop water, last clean and consumables with reset",
+  description: "Instrument-panel robot vacuum card: state, battery, controls, suction, mop water, last clean, map with room cleaning and consumables with reset",
   preview: true,
   documentationURL: "https://github.com/pablopeza/vacuum-hud-card",
 });
