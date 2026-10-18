@@ -838,11 +838,10 @@ class VacuumHudCard extends HTMLElement {
         pills += noteRow(S.labels.suction, S.labels.locked);
       }
     }
+    // Hidden while unavailable (e.g. Dreame without the mop attached), instead
+    // of offering "Unavailable" as an option.
     const water = this._st("water_level");
-    if (water && !isUsable(water)) {
-      // e.g. no mop attached: tell it, don't offer "Unavailable" as an option.
-      pills += noteRow(S.labels.water, this._stateLabel(water, S));
-    } else if (water && Array.isArray(water.attributes.options)) {
+    if (isUsable(water) && Array.isArray(water.attributes.options)) {
       pills += pillRow(S.labels.water, water.attributes.options, water.state, "water", (o) => this._optionLabel(water, o, S));
     }
     html.pills = pills ? `<div class="pills-wrap divider">${pills}</div>` : "";

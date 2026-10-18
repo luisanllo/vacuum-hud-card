@@ -22,7 +22,8 @@
 - The title repeated the device name ("D20 Pro Plus D20 Pro Plus") on
   integrations that name the vacuum after its device; it now uses the device name.
 - A mop water `select` that's unavailable (no mop attached) showed
-  "Unavailable" as a selectable option; it now shows as a note.
+  "Unavailable" as a selectable option; the block is now hidden until it's
+  available again.
 - The suction block vanished when the vacuum stops offering suction for a while
   (Dreame, during a clean with per-room settings); it now says it can't be
   changed right now.
