@@ -5,9 +5,10 @@
 ### Added
 
 - Map section: shows the vacuum's map from a `camera` or `image` entity (`map`)
-  and refreshes it without blinking when the entity updates.
-- Map / floor switch (`map_select`): pills above the map to change the
-  vacuum's selected map. With one `image` entity per map (Roborock), the map
+  and refreshes it without blinking when the entity updates. Zoom with the
+  + / − buttons, the mouse wheel or a pinch, and drag to pan.
+- Map / floor switch (`map_select`): a bubble on the map that shows the
+  selected map and opens the others to switch to. With one `image` entity per map (Roborock), the map
   image follows the selected map.
 - Room cleaning: a button on the map opens the rooms over it; pick one or more
   and send the vacuum there

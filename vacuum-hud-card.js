@@ -100,6 +100,8 @@ const STRINGS = {
       zoneHint: "Drag on the map to mark the zone",
       cleanZone: "Clean zone",
       cancel: "Cancel",
+      zoomIn: "Zoom in",
+      zoomOut: "Zoom out",
     },
   },
   es: {
@@ -180,6 +182,8 @@ const STRINGS = {
       zoneHint: "Arrastra sobre el mapa para marcar la zona",
       cleanZone: "Limpiar zona",
       cancel: "Cancelar",
+      zoomIn: "Acercar",
+      zoomOut: "Alejar",
     },
   },
 };
@@ -215,6 +219,10 @@ const ICONS = {
     "M13,3A9,9 0 0,0 4,12H1L4.89,15.89L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3Z",
   check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
   close: "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+  plus: "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+  minus: "M19,13H5V11H19V13Z",
+  layers: "M12,16L19.36,10.27L21,9L12,2L3,9L4.63,10.27M12,18.54L4.62,12.81L3,14.07L12,21.07L21,14.07L19.37,12.8L12,18.54Z",
+  chevron: "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z",
   alert:
     "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
 };
@@ -246,6 +254,7 @@ const ZONE_SERVICES = {
 };
 // Shorter drags than this (in map pixels) are taps, not zones.
 const ZONE_MIN_PX = 6;
+const MAP_MAX_ZOOM = 5;
 
 // Text states that mean "no fault" on fault/error sensors (Roborock reports
 // `none`, Dreame `no_error`, binary sensors `off`).
@@ -669,8 +678,20 @@ class VacuumHudCard extends HTMLElement {
       case "map-select": {
         const id = this._config.map_select;
         this._call(id.split(".")[0], "select_option", { entity_id: id, option: value });
+        if (this._floorOpen) {
+          this._floorOpen = false;
+          this._render();
+        }
         break;
       }
+      case "floor-menu":
+        this._floorOpen = !this._floorOpen;
+        this._render();
+        break;
+      case "zoom-in":
+      case "zoom-out":
+        this._zoomCenter(action === "zoom-in" ? 1.5 : 1 / 1.5);
+        break;
       case "room": {
         const i = this._selected.indexOf(value);
         if (i >= 0) this._selected.splice(i, 1);
@@ -824,8 +845,10 @@ class VacuumHudCard extends HTMLElement {
         <div class="floors-slot"></div>
         <div class="map clickable" data-action="more-info">
           <div class="map-frame">
-            <img alt=""><div class="zone-box" hidden></div>
+            <div class="map-view"><img alt=""><div class="zone-box" hidden></div></div>
+            <div class="map-floor"></div>
             <div class="map-tools"></div>
+            <div class="map-zoom"></div>
             <div class="map-panel" data-action="noop" hidden></div>
           </div>
         </div>
@@ -845,17 +868,29 @@ class VacuumHudCard extends HTMLElement {
       panel: map.querySelector(".map-panel"),
       zoneBox: map.querySelector(".zone-box"),
       mapFrame: map.querySelector(".map-frame"),
+      mapView: map.querySelector(".map-view"),
+      floorChip: map.querySelector(".map-floor"),
+      zoom: map.querySelector(".map-zoom"),
       sec: {},
     };
+    this._view = { s: 1, x: 0, y: 0 };
+    this._ptrs = new Map();
     const frame = this._els.mapFrame;
-    frame.addEventListener("pointerdown", (ev) => this._zoneDown(ev));
-    frame.addEventListener("pointermove", (ev) => this._zoneMove(ev));
-    frame.addEventListener("pointerup", (ev) => this._zoneUp(ev));
-    frame.addEventListener("pointercancel", () => {
-      this._drag = null;
+    frame.addEventListener("pointerdown", (ev) => this._ptrDown(ev));
+    frame.addEventListener("pointermove", (ev) => this._ptrMove(ev));
+    frame.addEventListener("pointerup", (ev) => this._ptrUp(ev, true));
+    frame.addEventListener("pointercancel", (ev) => this._ptrUp(ev, false));
+    frame.addEventListener("wheel", (ev) => this._onWheel(ev), { passive: false });
+    // A drag that moved the map isn't a tap on it.
+    frame.addEventListener("click", (ev) => {
+      if (!this._suppressClick) return;
+      this._suppressClick = false;
+      ev.stopPropagation();
+    });
+    this._els.mapImg.addEventListener("load", () => {
+      this._setView(this._view.s, this._view.x, this._view.y);
       this._drawZone();
     });
-    this._els.mapImg.addEventListener("load", () => this._drawZone());
     SECTIONS.forEach((k) => (this._els.sec[k] = root.querySelector(`[data-sec="${k}"]`)));
     this._html = new Map();
     this._mapUrl = null;
@@ -874,29 +909,127 @@ class VacuumHudCard extends HTMLElement {
     const fy = Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height));
     return [fx * img.naturalWidth, fy * img.naturalHeight];
   }
-  _zoneDown(ev) {
-    if (this._mode !== "zone" || !this._calib) return;
-    // The buttons on the map are buttons, not the start of a zone.
-    if (ev.target.closest && ev.target.closest("button")) return;
-    const pt = this._mapPoint(ev);
-    if (!pt) return;
+  _frameScale() {
+    const f = this._els.mapFrame;
+    const rect = f.getBoundingClientRect();
+    // Screen pixels per CSS pixel, so it also works with CSS zoom.
+    return { rect, k: f.offsetWidth ? rect.width / f.offsetWidth : 1 };
+  }
+  // Zoom and pan as a transform on the image's wrapper (the zone overlay
+  // rides along), kept inside the frame so no empty edge shows.
+  _setView(s, x, y) {
+    const f = this._els.mapFrame;
+    const W = f.offsetWidth;
+    const H = f.offsetHeight;
+    s = Math.min(MAP_MAX_ZOOM, Math.max(1, s));
+    x = s === 1 ? 0 : Math.min(0, Math.max(W * (1 - s), x));
+    y = s === 1 ? 0 : Math.min(0, Math.max(H * (1 - s), y));
+    this._view = { s, x, y };
+    this._els.mapView.style.transform = s === 1 ? "" : `translate(${x}px, ${y}px) scale(${s})`;
+    f.classList.toggle("zoomed", s > 1);
+    const [zin, zout] = this._els.zoom.querySelectorAll("button");
+    if (zin) zin.disabled = s >= MAP_MAX_ZOOM;
+    if (zout) zout.disabled = s <= 1;
+  }
+  // Zoom to `s`, keeping the map point under (cx, cy) where it is.
+  _zoomAt(cx, cy, s) {
+    const { rect, k } = this._frameScale();
+    const lx = (cx - rect.left) / k;
+    const ly = (cy - rect.top) / k;
+    const v = this._view;
+    const ns = Math.min(MAP_MAX_ZOOM, Math.max(1, s));
+    this._setView(ns, lx - (ns * (lx - v.x)) / v.s, ly - (ns * (ly - v.y)) / v.s);
+  }
+  _zoomCenter(factor) {
+    const { rect } = this._frameScale();
+    this._zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, this._view.s * factor);
+  }
+  _onWheel(ev) {
+    if (!this._els.mapImg.naturalWidth || this._els.mapBox.hidden) return;
+    // Scrolling out of an unzoomed map is left to the page, so it still scrolls.
+    if (ev.deltaY > 0 && this._view.s <= 1) return;
     ev.preventDefault();
+    this._zoomAt(ev.clientX, ev.clientY, this._view.s * Math.exp(-ev.deltaY * 0.002));
+  }
+  _pinchInfo() {
+    const [a, b] = [...this._ptrs.values()];
+    return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  }
+  // One pointer draws a zone (zone mode) or pans a zoomed map; two pinch-zoom.
+  _ptrDown(ev) {
+    this._suppressClick = false;
+    // The buttons and panels on the map are not the map.
+    if (ev.target.closest && ev.target.closest("button, .map-panel:not(.hint), .floor-menu")) return;
+    if (!this._els.mapImg.naturalWidth) return;
+    this._ptrs.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
     try {
       this._els.mapFrame.setPointerCapture(ev.pointerId);
     } catch (e) {
-      // Not an active pointer (synthetic event): drawing still works.
+      // Not an active pointer (synthetic event): the rest still works.
     }
-    this._drag = { a: pt, b: pt };
-    this._drawZone();
+    if (this._ptrs.size === 2) {
+      this._drag = null;
+      this._pan = null;
+      this._pinch = { ...this._pinchInfo(), v: { ...this._view } };
+      this._drawZone();
+      return;
+    }
+    if (this._ptrs.size > 2) return;
+    if (this._mode === "zone" && this._calib) {
+      const pt = this._mapPoint(ev);
+      if (!pt) return;
+      ev.preventDefault();
+      this._drag = { a: pt, b: pt };
+      this._drawZone();
+    } else if (this._view.s > 1) {
+      this._pan = { x: ev.clientX, y: ev.clientY, v: { ...this._view }, moved: false };
+    }
   }
-  _zoneMove(ev) {
-    if (!this._drag) return;
-    const pt = this._mapPoint(ev);
-    if (pt) this._drag.b = pt;
-    this._drawZone();
+  _ptrMove(ev) {
+    if (!this._ptrs.has(ev.pointerId)) return;
+    this._ptrs.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+    if (this._pinch) {
+      if (this._ptrs.size < 2) return;
+      const p = this._pinch;
+      const cur = this._pinchInfo();
+      const { rect, k } = this._frameScale();
+      const ns = Math.min(MAP_MAX_ZOOM, Math.max(1, (p.v.s * cur.d) / p.d));
+      // The map point that was under the fingers stays under them.
+      const cx = ((p.mx - rect.left) / k - p.v.x) / p.v.s;
+      const cy = ((p.my - rect.top) / k - p.v.y) / p.v.s;
+      this._setView(ns, (cur.mx - rect.left) / k - ns * cx, (cur.my - rect.top) / k - ns * cy);
+      return;
+    }
+    if (this._drag) {
+      const pt = this._mapPoint(ev);
+      if (pt) this._drag.b = pt;
+      this._drawZone();
+    } else if (this._pan) {
+      const { k } = this._frameScale();
+      const dx = (ev.clientX - this._pan.x) / k;
+      const dy = (ev.clientY - this._pan.y) / k;
+      if (Math.hypot(dx, dy) > 3) this._pan.moved = true;
+      this._setView(this._pan.v.s, this._pan.v.x + dx, this._pan.v.y + dy);
+    }
   }
-  _zoneUp(ev) {
+  _ptrUp(ev, done) {
+    if (!this._ptrs.has(ev.pointerId)) return;
+    this._ptrs.delete(ev.pointerId);
+    if (this._pinch) {
+      if (this._ptrs.size < 2) this._pinch = null;
+      return;
+    }
+    if (this._pan) {
+      if (this._pan.moved) this._suppressClick = true;
+      this._pan = null;
+      return;
+    }
     if (!this._drag) return;
+    if (!done) {
+      this._drag = null;
+      this._drawZone();
+      return;
+    }
     const pt = this._mapPoint(ev);
     if (pt) this._drag.b = pt;
     const { a, b } = this._drag;
@@ -1100,14 +1233,7 @@ class VacuumHudCard extends HTMLElement {
     const sel = this._st("map_select");
     const floor = isUsable(sel) ? sel.state : null;
     const floorOpts = floor && Array.isArray(sel.attributes.options) ? sel.attributes.options : [];
-    let floors = "";
-    if (floorOpts.length > 1) {
-      floors = `<div class="section-label">${esc(S.labels.floor)}</div>
-        <div class="pills">${floorOpts
-          .map((o) => `<button class="pill${o === floor ? " on" : ""}" data-action="map-select" data-value="${esc(o)}">${esc(this._optionLabel(sel, o, S))}</button>`)
-          .join("")}</div>`;
-    }
-    this._patch(els.floors, floors);
+    const floorName = (o) => this._optionLabel(sel, o, S);
 
     const mapId = this._mapEntityId();
     const mapSt = mapId ? this._hass.states[mapId] : undefined;
@@ -1121,6 +1247,43 @@ class VacuumHudCard extends HTMLElement {
     }
     els.mapBox.hidden = !mapUrl;
     els.mapBox.dataset.value = mapId || "";
+
+    // Map / floor switch: a bubble on the map's left corner that opens the
+    // other maps, or a row of pills when there's no map image.
+    let floors = "";
+    let floorChip = "";
+    if (floorOpts.length > 1 && mapUrl) {
+      floorChip = `<button class="map-chip" data-action="floor-menu" title="${esc(S.labels.floor)}">${icon("layers", 16)}<span>${esc(floorName(floor))}</span>${icon("chevron", 14)}</button>`;
+      if (this._floorOpen) {
+        floorChip += `<div class="floor-menu">${floorOpts
+          .map((o) => `<button class="${o === floor ? "on" : ""}" data-action="map-select" data-value="${esc(o)}">${esc(floorName(o))}</button>`)
+          .join("")}</div>`;
+      }
+    } else if (floorOpts.length > 1) {
+      floors = `<div class="section-label">${esc(S.labels.floor)}</div>
+        <div class="pills">${floorOpts
+          .map((o) => `<button class="pill${o === floor ? " on" : ""}" data-action="map-select" data-value="${esc(o)}">${esc(floorName(o))}</button>`)
+          .join("")}</div>`;
+    }
+    if (!floorChip) this._floorOpen = false;
+    this._patch(els.floors, floors);
+    this._patch(els.floorChip, floorChip);
+
+    // A different map (or floor) starts unzoomed.
+    const viewKey = `${mapId}|${floor}`;
+    this._patch(
+      els.zoom,
+      mapUrl
+        ? `<button class="map-btn small" data-action="zoom-in" title="${esc(S.labels.zoomIn)}" aria-label="${esc(S.labels.zoomIn)}">${icon("plus", 18)}</button>
+           <button class="map-btn small" data-action="zoom-out" title="${esc(S.labels.zoomOut)}" aria-label="${esc(S.labels.zoomOut)}">${icon("minus", 18)}</button>`
+        : ""
+    );
+    if (this._viewKey !== viewKey) {
+      this._viewKey = viewKey;
+      this._setView(1, 0, 0);
+    } else {
+      this._setView(this._view.s, this._view.x, this._view.y);
+    }
 
     // Room and zone cleaning sit as buttons on the map, so they don't make
     // the card longer. Without a map image, rooms go below as a list.
@@ -1322,8 +1485,19 @@ const STYLE = `
 
   .map-wrap { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }
   .map { display: flex; justify-content: center; padding: 4px; }
-  .map-frame { position: relative; max-width: 100%; }
-  .map img { display: block; max-width: 100%; max-height: 320px; border-radius: 6px; -webkit-user-drag: none; user-select: none; }
+  .map-frame { position: relative; max-width: 100%; overflow: hidden; border-radius: 6px; touch-action: pan-y; }
+  .map-frame.zoomed { touch-action: none; cursor: grab; }
+  .map-view { transform-origin: 0 0; }
+  .map img { display: block; max-width: 100%; max-height: 320px; -webkit-user-drag: none; user-select: none; }
+  .map-floor { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 90px); }
+  .map-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 30px; padding: 0 8px 0 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; background: var(--card-background-color, #fff); color: var(--primary-text-color, #1c2128); border: 1px solid var(--divider-color, rgba(0,0,0,.12)); box-shadow: 0 1px 4px rgba(0,0,0,.18); box-sizing: border-box; }
+  .map-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .floor-menu { margin-top: 4px; display: flex; flex-direction: column; min-width: 120px; background: var(--card-background-color, #fff); border: 1px solid var(--divider-color, rgba(0,0,0,.12)); border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.22); overflow: hidden; }
+  .floor-menu button { text-align: left; padding: 8px 12px; font-size: 11.5px; }
+  .floor-menu button:hover { background: rgba(127,127,127,.12); }
+  .floor-menu button.on { color: ${COLORS.info}; font-weight: 600; }
+  .map-zoom { position: absolute; right: 6px; bottom: 6px; display: flex; flex-direction: column; gap: 5px; }
+  .map-btn.small { width: 28px; height: 28px; }
   .map.tool, .map.tool:hover { cursor: default; background: none; }
   .map.drawing { cursor: crosshair; touch-action: none; }
   .zone-box { position: absolute; border: 2px solid ${COLORS.info}; background: rgba(59,130,196,.18); border-radius: 3px; pointer-events: none; box-sizing: border-box; }
@@ -1334,8 +1508,8 @@ const STYLE = `
   .map-panel { position: absolute; left: 6px; right: 6px; bottom: 6px; max-height: calc(100% - 50px); overflow: auto; padding: 8px; border-radius: 8px; background: var(--card-background-color, #fff); box-shadow: 0 2px 8px rgba(0,0,0,.22); cursor: default; box-sizing: border-box; }
   .map-panel .rooms { flex-direction: column; align-items: stretch; gap: 8px; }
   .map-panel .clean-btn { align-self: flex-end; }
-  .map-panel.hint { pointer-events: none; left: 50%; right: auto; transform: translateX(-50%); padding: 0; background: none; box-shadow: none; overflow: visible; }
-  .map-hint { white-space: nowrap; font-size: 11px; color: #fff; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 999px; }
+  .map-panel.hint { pointer-events: none; left: 6px; right: 42px; padding: 0; background: none; box-shadow: none; overflow: visible; }
+  .map-hint { display: inline-block; font-size: 11px; line-height: 1.3; color: #fff; background: rgba(0,0,0,.6); padding: 4px 10px; border-radius: 12px; }
   .rooms { display: flex; align-items: flex-end; gap: 10px; }
   .rooms .pills { flex: 1; min-width: 0; }
   .clean-btn { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: ${COLORS.low}; color: #fff; transition: background .15s ease; }

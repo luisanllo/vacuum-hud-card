@@ -26,7 +26,7 @@ and shares its look, so both sit well together on a dashboard.
 - 🌀 Suction selector from the vacuum's `fan_speed_list`
 - 💧 Mop water level selector (any `select` entity)
 - 📏 Last clean area and time, and a fault indicator with a banner showing the error description
-- 🗺️ Map image (any `camera` or `image` entity), a **map / floor switch**, **room cleaning** (pick one or more rooms and send the vacuum there) and **zone cleaning** (draw a rectangle on the map)
+- 🗺️ Map image (any `camera` or `image` entity) you can **zoom and pan**, a **map / floor switch**, **room cleaning** (pick one or more rooms and send the vacuum there) and **zone cleaning** (draw a rectangle on the map)
 - 🧽 Consumables (filter, side brush, main brush, mop, sensor cleaning) with color-coded bars and a **two-tap reset**: the first tap arms it, the second presses the reset button. Integrations that report time left instead of a percentage (Roborock, Xiaomi) show the time left
 - 👆 Every value opens Home Assistant's more-info dialog when tapped
 - 🎨 Visual editor that **pre-fills the companion entities** of the vacuum's device (battery, faults, consumables, reset buttons, map…)
@@ -107,9 +107,12 @@ duration`) is shown as time, without a bar: the card doesn't know its total life
 
 `map` shows the vacuum's map from any `camera` or `image` entity (the editor
 picks the one on the vacuum's device) and refreshes it when the entity updates.
+Zoom in with the + / − buttons on the map, the mouse wheel or a two-finger
+pinch, and drag to move around a zoomed map.
 
-With several maps (one per floor), `map_select` adds a switch above the map
-that changes the vacuum's selected map. It's hidden while the `select` is
+With several maps (one per floor), `map_select` adds a bubble in the map's top
+left corner that shows the selected map and opens the others to switch to
+(without a map image, it's a row of buttons instead). It's hidden while the `select` is
 unavailable (Dreame, for example, while it's mapping). If `map` is an `image`
 entity and the device has one image per map (Roborock), the card shows the one
 named after the selected map.
