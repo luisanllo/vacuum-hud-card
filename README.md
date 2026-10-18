@@ -26,7 +26,7 @@ and shares its look, so both sit well together on a dashboard.
 - 🌀 Suction selector from the vacuum's `fan_speed_list`
 - 💧 Mop water level selector (any `select` entity)
 - 📏 Last clean area and time, and a fault indicator with a banner showing the error description
-- 🗺️ Map image (any `camera` or `image` entity), a **map / floor switch**, and **room cleaning**: pick one or more rooms and send the vacuum there
+- 🗺️ Map image (any `camera` or `image` entity), a **map / floor switch**, **room cleaning** (pick one or more rooms and send the vacuum there) and **zone cleaning** (draw a rectangle on the map)
 - 🧽 Consumables (filter, side brush, main brush, mop, sensor cleaning) with color-coded bars and a **two-tap reset**: the first tap arms it, the second presses the reset button. Integrations that report time left instead of a percentage (Roborock, Xiaomi) show the time left
 - 👆 Every value opens Home Assistant's more-info dialog when tapped
 - 🎨 Visual editor that **pre-fills the companion entities** of the vacuum's device (battery, faults, consumables, reset buttons, map…)
@@ -75,6 +75,7 @@ Only `entity` is required.
 | `map_select` | | The vacuum's map / floor `select` (e.g. Dreame's or Roborock's "Selected map") |
 | `rooms` | | Area IDs to offer for room cleaning, in this order (defaults to every area mapped to the vacuum) |
 | `show_rooms` | | Show room cleaning (default `true`) |
+| `show_zone` | | Show zone cleaning when the map supports it (default `true`) |
 | `show_controls` | | Show the control buttons (default `true`) |
 | `show_fan_speed` | | Show the suction selector (default `true`) |
 
@@ -133,6 +134,15 @@ rooms:
   - kitchen
   - living_room
 ```
+
+### Zone cleaning
+
+Tap **Zone**, drag a rectangle on the map, then **Clean zone**. It needs a map
+entity with `calibration_points` (to turn image pixels into the vacuum's
+coordinates) and an integration with a zone cleaning action: Dreame Vacuum
+(`dreame_vacuum.vacuum_clean_zone`) or Xiaomi Miio
+(`xiaomi_miio.vacuum_clean_zone`, with a map from the Xiaomi Cloud Map
+Extractor). The button only shows when both are there.
 
 ## Why
 

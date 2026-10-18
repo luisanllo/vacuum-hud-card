@@ -52,6 +52,7 @@ const STRINGS = {
       showControls: "Show control buttons",
       showFanSpeed: "Show suction selector",
       showRooms: "Show room cleaning",
+      showZone: "Show zone cleaning (draw on the map)",
     },
     states: {
       cleaning: "Cleaning",
@@ -95,6 +96,10 @@ const STRINGS = {
       roomsError: "Couldn't read the vacuum's rooms",
       floor: "Map",
       noRoomsFloor: "No rooms on this map are mapped to areas yet. Tap here to open the vacuum's details.",
+      zone: "Zone",
+      zoneHint: "Drag on the map to mark the zone",
+      cleanZone: "Clean zone",
+      cancel: "Cancel",
     },
   },
   es: {
@@ -127,6 +132,7 @@ const STRINGS = {
       showControls: "Mostrar los botones de control",
       showFanSpeed: "Mostrar el selector de succión",
       showRooms: "Mostrar la limpieza por habitaciones",
+      showZone: "Mostrar la limpieza por zona (dibujar en el mapa)",
     },
     states: {
       cleaning: "Limpiando",
@@ -170,6 +176,10 @@ const STRINGS = {
       roomsError: "No se han podido leer las habitaciones del robot",
       floor: "Mapa",
       noRoomsFloor: "Ninguna habitación de este mapa está asociada a un área. Toca aquí para abrir los detalles del robot.",
+      zone: "Zona",
+      zoneHint: "Arrastra sobre el mapa para marcar la zona",
+      cleanZone: "Limpiar zona",
+      cancel: "Cancelar",
     },
   },
 };
@@ -225,6 +235,16 @@ const CONFIRM_MS = 3000;
 // A second tap that comes this soon after the first is a double-click, not a
 // confirmation, so it doesn't reset anything.
 const CONFIRM_MIN_MS = 400;
+
+// Zone cleaning: integrations with a zone service and a map that carries
+// `calibration_points` (pixel <-> vacuum coordinates), like Dreame Vacuum or
+// Xiaomi with the cloud map extractor. Both take a list of [x1, y1, x2, y2].
+const ZONE_SERVICES = {
+  dreame_vacuum: ["dreame_vacuum", "vacuum_clean_zone"],
+  xiaomi_miio: ["xiaomi_miio", "vacuum_clean_zone"],
+};
+// Shorter drags than this (in map pixels) are taps, not zones.
+const ZONE_MIN_PX = 6;
 
 // Text states that mean "no fault" on fault/error sensors (Roborock reports
 // `none`, Dreame `no_error`, binary sensors `off`).
@@ -303,6 +323,35 @@ function durationHtml(st) {
   const m = mins % 60;
   const unit = (u) => `<span class="stat-unit"> ${u}</span>`;
   return h ? `${h}${unit("h")}${m ? ` ${m}${unit("min")}` : ""}` : `${m}${unit("min")}`;
+}
+
+// Affine transform from three point pairs ([[sx, sy, dx, dy] x3]), solved
+// with Cramer's rule. Returns (x, y) => [x', y'], or null if degenerate.
+function affine(pairs) {
+  const [p, q, r] = pairs;
+  const det = p[0] * (q[1] - r[1]) - p[1] * (q[0] - r[0]) + (q[0] * r[1] - r[0] * q[1]);
+  if (!det) return null;
+  const solve = (k) => [
+    (p[k] * (q[1] - r[1]) - p[1] * (q[k] - r[k]) + (q[k] * r[1] - r[k] * q[1])) / det,
+    (p[0] * (q[k] - r[k]) - p[k] * (q[0] - r[0]) + (q[0] * r[k] - r[0] * q[k])) / det,
+    (p[0] * (q[1] * r[k] - r[1] * q[k]) - p[1] * (q[0] * r[k] - r[0] * q[k]) + p[k] * (q[0] * r[1] - r[0] * q[1])) / det,
+  ];
+  const X = solve(2);
+  const Y = solve(3);
+  return (x, y) => [X[0] * x + X[1] * y + X[2], Y[0] * x + Y[1] * y + Y[2]];
+}
+
+// Map pixel <-> vacuum coordinate transforms from a map entity's
+// calibration_points ([{ vacuum: {x, y}, map: {x, y} } x3]).
+function calibration(st) {
+  const pts = st && st.attributes.calibration_points;
+  if (!Array.isArray(pts) || pts.length < 3) return null;
+  const three = pts.slice(0, 3);
+  const ok = three.every((c) => c && c.vacuum && c.map && [c.vacuum.x, c.vacuum.y, c.map.x, c.map.y].every(Number.isFinite));
+  if (!ok) return null;
+  const toVac = affine(three.map((c) => [c.map.x, c.map.y, c.vacuum.x, c.vacuum.y]));
+  const toMap = affine(three.map((c) => [c.vacuum.x, c.vacuum.y, c.map.x, c.map.y]));
+  return toVac && toMap ? { toVac, toMap } : null;
 }
 
 function deviceName(hass, entityId) {
@@ -410,7 +459,7 @@ function guessEntities(hass, vacuumId) {
 
 class VacuumHudCardEditor extends HTMLElement {
   _withDefaults(config) {
-    return { show_controls: true, show_fan_speed: true, show_rooms: true, ...(config || {}) };
+    return { show_controls: true, show_fan_speed: true, show_rooms: true, show_zone: true, ...(config || {}) };
   }
   setConfig(config) {
     this._config = this._withDefaults(config);
@@ -480,6 +529,7 @@ class VacuumHudCardEditor extends HTMLElement {
           { name: "show_controls", label: E.showControls, selector: { boolean: {} } },
           { name: "show_fan_speed", label: E.showFanSpeed, selector: { boolean: {} } },
           { name: "show_rooms", label: E.showRooms, selector: { boolean: {} } },
+          { name: "show_zone", label: E.showZone, selector: { boolean: {} } },
         ],
       },
     ];
@@ -518,6 +568,9 @@ class VacuumHudCard extends HTMLElement {
     this._timers = {};
     this._selected = []; // area ids picked for a room clean, in tap order
     this._rooms = null; // { entity, status: "loading" | "ok" | "error", areas }
+    this._zoneMode = false;
+    this._zone = null; // [x1, y1, x2, y2] in vacuum coordinates
+    this._drag = null; // { a: [x, y], b: [x, y] } in map pixels while drawing
   }
   setConfig(config) {
     if (!config || !config.entity) throw new Error("vacuum-hud-card: 'entity' is required");
@@ -621,6 +674,21 @@ class VacuumHudCard extends HTMLElement {
         const i = this._selected.indexOf(value);
         if (i >= 0) this._selected.splice(i, 1);
         else this._selected.push(value);
+        this._render();
+        break;
+      }
+      case "zone-mode":
+        this._zoneMode = !this._zoneMode;
+        this._zone = null;
+        this._drag = null;
+        this._render();
+        break;
+      case "clean-zone": {
+        const svc = this._zoneService();
+        if (!svc || !this._zone) break;
+        this._call(svc[0], svc[1], { zone: [this._zone], repeats: 1 }, { entity_id });
+        this._zoneMode = false;
+        this._zone = null;
         this._render();
         break;
       }
@@ -748,7 +816,10 @@ class VacuumHudCard extends HTMLElement {
     map.innerHTML = `
       <div class="map-wrap divider">
         <div class="floors-slot"></div>
-        <div class="map clickable" data-action="more-info"><img alt=""></div>
+        <div class="map clickable" data-action="more-info">
+          <div class="map-frame"><img alt=""><div class="zone-box" hidden></div></div>
+        </div>
+        <div class="zone-slot"></div>
         <div class="rooms-slot"></div>
       </div>`;
     this._els = {
@@ -761,11 +832,95 @@ class VacuumHudCard extends HTMLElement {
       mapImg: map.querySelector("img"),
       rooms: map.querySelector(".rooms-slot"),
       floors: map.querySelector(".floors-slot"),
+      zone: map.querySelector(".zone-slot"),
+      zoneBox: map.querySelector(".zone-box"),
+      mapFrame: map.querySelector(".map-frame"),
       sec: {},
     };
+    const frame = this._els.mapFrame;
+    frame.addEventListener("pointerdown", (ev) => this._zoneDown(ev));
+    frame.addEventListener("pointermove", (ev) => this._zoneMove(ev));
+    frame.addEventListener("pointerup", (ev) => this._zoneUp(ev));
+    frame.addEventListener("pointercancel", () => {
+      this._drag = null;
+      this._drawZone();
+    });
+    this._els.mapImg.addEventListener("load", () => this._drawZone());
     SECTIONS.forEach((k) => (this._els.sec[k] = root.querySelector(`[data-sec="${k}"]`)));
     this._html = new Map();
     this._mapUrl = null;
+  }
+  _zoneService() {
+    const ent = this._hass.entities && this._hass.entities[this._config.entity];
+    return ent && ZONE_SERVICES[ent.platform];
+  }
+  // Pointer position in the map image's own pixels. Uses only the rendered
+  // box, so it stays right when the card is scaled with CSS zoom.
+  _mapPoint(ev) {
+    const img = this._els.mapImg;
+    const rect = img.getBoundingClientRect();
+    if (!rect.width || !rect.height || !img.naturalWidth) return null;
+    const fx = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+    const fy = Math.min(1, Math.max(0, (ev.clientY - rect.top) / rect.height));
+    return [fx * img.naturalWidth, fy * img.naturalHeight];
+  }
+  _zoneDown(ev) {
+    if (!this._zoneMode || !this._calib) return;
+    const pt = this._mapPoint(ev);
+    if (!pt) return;
+    ev.preventDefault();
+    try {
+      this._els.mapFrame.setPointerCapture(ev.pointerId);
+    } catch (e) {
+      // Not an active pointer (synthetic event): drawing still works.
+    }
+    this._drag = { a: pt, b: pt };
+    this._drawZone();
+  }
+  _zoneMove(ev) {
+    if (!this._drag) return;
+    const pt = this._mapPoint(ev);
+    if (pt) this._drag.b = pt;
+    this._drawZone();
+  }
+  _zoneUp(ev) {
+    if (!this._drag) return;
+    const pt = this._mapPoint(ev);
+    if (pt) this._drag.b = pt;
+    const { a, b } = this._drag;
+    this._drag = null;
+    if (Math.abs(a[0] - b[0]) >= ZONE_MIN_PX && Math.abs(a[1] - b[1]) >= ZONE_MIN_PX && this._calib) {
+      // All four corners, so a rotated map still gives the right box.
+      const corners = [[a[0], a[1]], [b[0], a[1]], [a[0], b[1]], [b[0], b[1]]].map(([x, y]) => this._calib.toVac(x, y));
+      const xs = corners.map((c) => c[0]);
+      const ys = corners.map((c) => c[1]);
+      this._zone = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)].map(Math.round);
+    }
+    this._render();
+  }
+  // Draw the zone (or the one being dragged) over the map, in percentages of
+  // the image so it follows any display size.
+  _drawZone() {
+    const box = this._els.zoneBox;
+    const img = this._els.mapImg;
+    let px = null;
+    if (this._drag) px = [this._drag.a, this._drag.b];
+    else if (this._zone && this._calib) {
+      const [x1, y1, x2, y2] = this._zone;
+      px = [this._calib.toMap(x1, y1), this._calib.toMap(x2, y2)];
+    }
+    if (!px || !this._zoneMode || !img.naturalWidth) {
+      box.hidden = true;
+      return;
+    }
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const l = Math.min(px[0][0], px[1][0]) / W;
+    const t = Math.min(px[0][1], px[1][1]) / H;
+    const w = Math.abs(px[0][0] - px[1][0]) / W;
+    const h = Math.abs(px[0][1] - px[1][1]) / H;
+    Object.assign(box.style, { left: `${l * 100}%`, top: `${t * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` });
+    box.hidden = false;
   }
   // Replace an element's content only when it actually changed.
   _patch(el, html) {
@@ -954,6 +1109,33 @@ class VacuumHudCard extends HTMLElement {
     }
     els.mapBox.hidden = !mapUrl;
     els.mapBox.dataset.value = mapId || "";
+
+    // Zone cleaning: draw a rectangle on the map.
+    this._calib = calibration(mapSt);
+    const zoneOk = !!(mapUrl && this._calib && this._zoneService() && isUsable(vac) && c.show_zone !== false);
+    if (!zoneOk) {
+      this._zoneMode = false;
+      this._zone = null;
+    }
+    // While drawing, a tap on the map draws instead of opening its details.
+    if (this._zoneMode) els.mapBox.removeAttribute("data-action");
+    else els.mapBox.setAttribute("data-action", "more-info");
+    els.mapBox.classList.toggle("drawing", this._zoneMode);
+    let zone = "";
+    if (zoneOk) {
+      const zoneIc = `<svg class="ic" width="16" height="16" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1.5" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="3 2.5"/></svg>`;
+      zone = !this._zoneMode
+        ? `<button class="pill" data-action="zone-mode">${zoneIc}${esc(S.labels.zone)}</button>`
+        : `<div class="zone-bar">
+            ${this._zone
+              ? `<button class="clean-btn" data-action="clean-zone">${icon("play", 16)}<span>${esc(S.labels.cleanZone)}</span></button>`
+              : `<span class="note">${esc(S.labels.zoneHint)}</span>`}
+            <button class="pill" data-action="zone-mode">${esc(S.labels.cancel)}</button>
+          </div>`;
+    }
+    this._patch(els.zone, zone);
+    els.zone.hidden = !zone;
+    this._drawZone();
     this._setMapImage(mapUrl);
 
     let rooms = "";
@@ -995,7 +1177,7 @@ class VacuumHudCard extends HTMLElement {
     this._patch(els.rooms, rooms);
     els.rooms.hidden = !rooms;
     els.floors.hidden = !floors;
-    html.map = mapUrl || rooms || floors ? "map" : "";
+    html.map = mapUrl || rooms || floors || zone ? "map" : "";
 
     // Consumables
     const rows = CONSUMABLES.filter((x) => c[x.key])
@@ -1115,7 +1297,11 @@ const STYLE = `
 
   .map-wrap { display: flex; flex-direction: column; gap: 12px; padding: 16px 0; }
   .map { display: flex; justify-content: center; padding: 4px; }
-  .map img { display: block; max-width: 100%; max-height: 320px; object-fit: contain; border-radius: 6px; }
+  .map-frame { position: relative; max-width: 100%; }
+  .map img { display: block; max-width: 100%; max-height: 320px; border-radius: 6px; -webkit-user-drag: none; user-select: none; }
+  .map.drawing { cursor: crosshair; touch-action: none; background: none; }
+  .zone-box { position: absolute; border: 2px solid ${COLORS.info}; background: rgba(59,130,196,.18); border-radius: 3px; pointer-events: none; box-sizing: border-box; }
+  .zone-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
   .rooms { display: flex; align-items: flex-end; gap: 10px; }
   .rooms .pills { flex: 1; min-width: 0; }
   .clean-btn { flex: none; display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: ${COLORS.low}; color: #fff; transition: background .15s ease; }

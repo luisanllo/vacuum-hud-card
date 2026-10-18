@@ -14,6 +14,9 @@
   are the areas mapped to the vacuum's segments; `rooms` limits and orders them.
   Only the rooms of the selected map are offered. Shows a hint that opens the
   vacuum's details when no area is mapped yet.
+- Zone cleaning: tap Zone, drag a rectangle on the map and send the vacuum to
+  clean it. Works with maps that carry `calibration_points` on Dreame Vacuum
+  and Xiaomi Miio (`show_zone` to hide it).
 - Sensor cleaning consumable (`sensor_cleaning` / `sensor_cleaning_reset`).
 - Consumables that report time left (Roborock, Xiaomi) are shown as time left
   instead of being read as a percentage.
