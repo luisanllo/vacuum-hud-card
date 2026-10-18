@@ -6,10 +6,14 @@
 
 - Map section: shows the vacuum's map from a `camera` or `image` entity (`map`)
   and refreshes it without blinking when the entity updates.
+- Map / floor switch (`map_select`): pills above the map to change the
+  vacuum's selected map. With one `image` entity per map (Roborock), the map
+  image follows the selected map.
 - Room cleaning: pick one or more rooms under the map and send the vacuum there
   with Home Assistant's `vacuum.clean_area` (Home Assistant 2026.3+). The rooms
   are the areas mapped to the vacuum's segments; `rooms` limits and orders them.
-  Shows a hint that opens the vacuum's details when no area is mapped yet.
+  Only the rooms of the selected map are offered. Shows a hint that opens the
+  vacuum's details when no area is mapped yet.
 - Sensor cleaning consumable (`sensor_cleaning` / `sensor_cleaning_reset`).
 - Consumables that report time left (Roborock, Xiaomi) are shown as time left
   instead of being read as a percentage.

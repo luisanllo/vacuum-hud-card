@@ -26,7 +26,7 @@ and shares its look, so both sit well together on a dashboard.
 - 🌀 Suction selector from the vacuum's `fan_speed_list`
 - 💧 Mop water level selector (any `select` entity)
 - 📏 Last clean area and time, and a fault indicator with a banner showing the error description
-- 🗺️ Map image (any `camera` or `image` entity) and **room cleaning**: pick one or more rooms and send the vacuum there
+- 🗺️ Map image (any `camera` or `image` entity), a **map / floor switch**, and **room cleaning**: pick one or more rooms and send the vacuum there
 - 🧽 Consumables (filter, side brush, main brush, mop, sensor cleaning) with color-coded bars and a **two-tap reset**: the first tap arms it, the second presses the reset button. Integrations that report time left instead of a percentage (Roborock, Xiaomi) show the time left
 - 👆 Every value opens Home Assistant's more-info dialog when tapped
 - 🎨 Visual editor that **pre-fills the companion entities** of the vacuum's device (battery, faults, consumables, reset buttons, map…)
@@ -72,6 +72,7 @@ Only `entity` is required.
 | `mop` / `mop_reset` | | Mop life sensor and its reset button |
 | `sensor_cleaning` / `sensor_cleaning_reset` | | Sensor cleaning sensor and its reset button |
 | `map` | | Map `camera` or `image` entity |
+| `map_select` | | The vacuum's map / floor `select` (e.g. Dreame's or Roborock's "Selected map") |
 | `rooms` | | Area IDs to offer for room cleaning, in this order (defaults to every area mapped to the vacuum) |
 | `show_rooms` | | Show room cleaning (default `true`) |
 | `show_controls` | | Show the control buttons (default `true`) |
@@ -106,6 +107,12 @@ duration`) is shown as time, without a bar: the card doesn't know its total life
 `map` shows the vacuum's map from any `camera` or `image` entity (the editor
 picks the one on the vacuum's device) and refreshes it when the entity updates.
 
+With several maps (one per floor), `map_select` adds a switch above the map
+that changes the vacuum's selected map. It's hidden while the `select` is
+unavailable (Dreame, for example, while it's mapping). If `map` is an `image`
+entity and the device has one image per map (Roborock), the card shows the one
+named after the selected map.
+
 Room cleaning uses Home Assistant's own area cleaning (`vacuum.clean_area`,
 Home Assistant 2026.3 or later), so it works with any integration that supports
 it, such as Roborock or Dreame Vacuum. The rooms are the Home Assistant areas
@@ -113,12 +120,15 @@ you mapped to the vacuum's segments: open the vacuum's more-info dialog and map
 them under **Clean areas**. Until you do, the card shows a hint that opens that
 dialog.
 
-Tap one or more rooms, then **Clean**. They're sent in the order you tapped
+When the maps have names Home Assistant knows from the area mapping, only the
+rooms of the selected map are offered, since vacuums ignore rooms on another
+map. Tap one or more rooms, then **Clean**. They're sent in the order you tapped
 them, though not every vacuum follows that order. With `rooms` you can limit and
 order the rooms the card offers:
 
 ```yaml
 map: camera.d20_pro_plus_map
+map_select: select.d20_pro_plus_selected_map
 rooms:
   - kitchen
   - living_room

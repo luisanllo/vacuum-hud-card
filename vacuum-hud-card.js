@@ -47,6 +47,7 @@ const STRINGS = {
       sensorCleaning: "Sensor cleaning",
       sensorCleaningReset: "Sensor cleaning reset button",
       mapEntity: "Map (camera or image entity)",
+      mapSelect: "Map / floor selector (select)",
       rooms: "Rooms to show (optional, every mapped area by default)",
       showControls: "Show control buttons",
       showFanSpeed: "Show suction selector",
@@ -92,6 +93,8 @@ const STRINGS = {
       clean: "Clean",
       noRooms: "Map the vacuum's segments to areas to send it to a room. Tap here to open its details.",
       roomsError: "Couldn't read the vacuum's rooms",
+      floor: "Map",
+      noRoomsFloor: "No rooms on this map are mapped to areas yet. Tap here to open the vacuum's details.",
     },
   },
   es: {
@@ -119,6 +122,7 @@ const STRINGS = {
       sensorCleaning: "Limpieza de sensores",
       sensorCleaningReset: "Botón de reset de la limpieza de sensores",
       mapEntity: "Mapa (entidad camera o image)",
+      mapSelect: "Selector de mapa / planta (select)",
       rooms: "Habitaciones a mostrar (opcional; por defecto, todas las áreas asociadas)",
       showControls: "Mostrar los botones de control",
       showFanSpeed: "Mostrar el selector de succión",
@@ -164,6 +168,8 @@ const STRINGS = {
       clean: "Limpiar",
       noRooms: "Asocia los segmentos del robot a áreas para mandarlo a una habitación. Toca aquí para abrir sus detalles.",
       roomsError: "No se han podido leer las habitaciones del robot",
+      floor: "Mapa",
+      noRoomsFloor: "Ninguna habitación de este mapa está asociada a un área. Toca aquí para abrir los detalles del robot.",
     },
   },
 };
@@ -391,6 +397,10 @@ function guessEntities(hass, vacuumId) {
     set(`${key}_reset`, pick("button", (st, t) => re.test(t) && /reset|restablec|reinici/.test(t)));
   }
   set(
+    "map_select",
+    pick("select", (st, t) => /selected.?map|current.?map|mapa seleccionado|piso seleccionado|floor/.test(t) && !/room|rotat/.test(t))
+  );
+  set(
     "map",
     pick("camera", (st, t) => /map|mapa/.test(t) && !/data|wifi/.test(t), (st, t) => (/_map\b/.test(t) ? 1 : 0)) ||
       pick("image", () => true)
@@ -445,6 +455,7 @@ class VacuumHudCardEditor extends HTMLElement {
         type: "expandable", name: "map", title: E.map, flatten: true,
         schema: [
           ent("map", E.mapEntity, ["camera", "image"]),
+          ent("map_select", E.mapSelect, ["select", "input_select"]),
           { name: "rooms", label: E.rooms, selector: { area: { multiple: true } } },
         ],
       },
@@ -549,9 +560,9 @@ class VacuumHudCard extends HTMLElement {
   }
   _ids() {
     const c = this._config;
-    const keys = ["entity", "battery", "problem", "clean_area", "clean_time", "water_level", "map"];
+    const keys = ["entity", "battery", "problem", "clean_area", "clean_time", "water_level", "map", "map_select"];
     CONSUMABLES.forEach((x) => keys.push(x.key, x.reset));
-    return keys.map((k) => c[k]).filter(Boolean);
+    return [...keys.map((k) => c[k]), this._mapEntityId()].filter(Boolean);
   }
   _signature() {
     if (!this._hass || !this._config) return null;
@@ -601,6 +612,11 @@ class VacuumHudCard extends HTMLElement {
       case "reset":
         this._reset(value);
         break;
+      case "map-select": {
+        const id = this._config.map_select;
+        this._call(id.split(".")[0], "select_option", { entity_id: id, option: value });
+        break;
+      }
       case "room": {
         const i = this._selected.indexOf(value);
         if (i >= 0) this._selected.splice(i, 1);
@@ -638,23 +654,52 @@ class VacuumHudCard extends HTMLElement {
     }, CONFIRM_MS);
   }
   // Areas the vacuum can be sent to: the ones mapped to its segments in the
-  // entity registry (Home Assistant's own "Clean areas" mapping).
+  // entity registry (Home Assistant's own "Clean areas" mapping). The
+  // segments seen when mapping carry the name of their map (floor), so the
+  // rooms can be narrowed down to the map that's loaded.
   _loadRooms() {
     const entity = this._config.entity;
-    this._rooms = { entity, status: "loading", areas: [] };
+    this._rooms = { entity, status: "loading", areas: [], floors: {}, knownFloors: new Set() };
     this._hass
       .callWS({ type: "config/entity_registry/get", entity_id: entity })
       .then((entry) => {
-        const mapping = (entry && entry.options && entry.options.vacuum && entry.options.vacuum.area_mapping) || {};
+        const opts = (entry && entry.options && entry.options.vacuum) || {};
+        const mapping = opts.area_mapping || {};
+        const groupOf = {};
+        const knownFloors = new Set();
+        for (const seg of opts.last_seen_segments || []) {
+          if (!seg || seg.group == null) continue;
+          groupOf[seg.id] = seg.group;
+          knownFloors.add(seg.group);
+        }
         const areas = Object.keys(mapping).filter((a) => Array.isArray(mapping[a]) && mapping[a].length);
-        return { entity, status: "ok", areas };
+        const floors = {};
+        areas.forEach((a) => (floors[a] = mapping[a].map((id) => groupOf[id]).filter((g) => g != null)));
+        return { entity, status: "ok", areas, floors, knownFloors };
       })
-      .catch(() => ({ entity, status: "error", areas: [] }))
+      .catch(() => ({ entity, status: "error", areas: [], floors: {}, knownFloors: new Set() }))
       .then((rooms) => {
         if (!this._config || this._config.entity !== entity) return;
         this._rooms = rooms;
         this._render();
       });
+  }
+  // With one `image` entity per map (Roborock), follow the selected map: use
+  // the device's image entity named after it.
+  _mapEntityId() {
+    const c = this._config;
+    const id = c && c.map;
+    const sel = c && this._hass && this._st("map_select");
+    if (!id || !id.startsWith("image.") || !isUsable(sel)) return id;
+    const ents = this._hass.entities || {};
+    const dev = ents[id] && ents[id].device_id;
+    if (!dev) return id;
+    const want = String(sel.state).toLowerCase();
+    const hit = Object.values(ents).find((e) => {
+      const st = e.device_id === dev && e.entity_id.startsWith("image.") && this._hass.states[e.entity_id];
+      return st && String(st.attributes.friendly_name || "").toLowerCase().endsWith(want);
+    });
+    return hit ? hit.entity_id : id;
   }
   _stateLabel(st, S) {
     if (!st) return S.labels.notFound;
@@ -702,6 +747,7 @@ class VacuumHudCard extends HTMLElement {
     const map = root.querySelector('[data-sec="map"]');
     map.innerHTML = `
       <div class="map-wrap divider">
+        <div class="floors-slot"></div>
         <div class="map clickable" data-action="more-info"><img alt=""></div>
         <div class="rooms-slot"></div>
       </div>`;
@@ -714,6 +760,7 @@ class VacuumHudCard extends HTMLElement {
       mapBox: map.querySelector(".map"),
       mapImg: map.querySelector("img"),
       rooms: map.querySelector(".rooms-slot"),
+      floors: map.querySelector(".floors-slot"),
       sec: {},
     };
     SECTIONS.forEach((k) => (this._els.sec[k] = root.querySelector(`[data-sec="${k}"]`)));
@@ -882,8 +929,21 @@ class VacuumHudCard extends HTMLElement {
     }
     html.stats = stats.length ? `<div class="grid divider">${stats.join("")}</div>` : "";
 
-    // Map + room cleaning
-    const mapSt = this._st("map");
+    // Map + floor switch + room cleaning
+    const sel = this._st("map_select");
+    const floor = isUsable(sel) ? sel.state : null;
+    const floorOpts = floor && Array.isArray(sel.attributes.options) ? sel.attributes.options : [];
+    let floors = "";
+    if (floorOpts.length > 1) {
+      floors = `<div class="section-label">${esc(S.labels.floor)}</div>
+        <div class="pills">${floorOpts
+          .map((o) => `<button class="pill${o === floor ? " on" : ""}" data-action="map-select" data-value="${esc(o)}">${esc(this._optionLabel(sel, o, S))}</button>`)
+          .join("")}</div>`;
+    }
+    this._patch(els.floors, floors);
+
+    const mapId = this._mapEntityId();
+    const mapSt = mapId ? this._hass.states[mapId] : undefined;
     const pic = mapSt && isUsable(mapSt) && mapSt.attributes.entity_picture;
     let mapUrl = null;
     if (pic) {
@@ -893,7 +953,7 @@ class VacuumHudCard extends HTMLElement {
       mapUrl = this._hass.hassUrl ? this._hass.hassUrl(url) : url;
     }
     els.mapBox.hidden = !mapUrl;
-    els.mapBox.dataset.value = c.map || "";
+    els.mapBox.dataset.value = mapId || "";
     this._setMapImage(mapUrl);
 
     let rooms = "";
@@ -903,11 +963,16 @@ class VacuumHudCard extends HTMLElement {
       const known = this._hass.areas || {};
       let areas = r.areas.filter((a) => known[a]);
       if (Array.isArray(c.rooms) && c.rooms.length) areas = c.rooms.filter((a) => areas.includes(a));
+      const mapped = areas.length;
+      // Only the rooms of the loaded map: vacuums ignore segments of another
+      // map. Skipped when the selector's name isn't one of the known maps.
+      if (floor && r.knownFloors.has(floor)) areas = areas.filter((a) => (r.floors[a] || []).includes(floor));
       this._selected = this._selected.filter((a) => areas.includes(a));
       if (r.status === "error") {
         rooms = `<div class="note">${esc(S.labels.roomsError)}</div>`;
       } else if (r.status === "ok" && !areas.length) {
-        rooms = `<div class="note clickable" data-action="more-info" data-value="${esc(c.entity)}">${esc(S.labels.noRooms)}</div>`;
+        const hint = mapped ? S.labels.noRoomsFloor : S.labels.noRooms;
+        rooms = `<div class="note clickable" data-action="more-info" data-value="${esc(c.entity)}">${esc(hint)}</div>`;
       } else if (areas.length) {
         const n = this._selected.length;
         const usable = isUsable(vac);
@@ -928,7 +993,9 @@ class VacuumHudCard extends HTMLElement {
       }
     }
     this._patch(els.rooms, rooms);
-    html.map = mapUrl || rooms ? "map" : "";
+    els.rooms.hidden = !rooms;
+    els.floors.hidden = !floors;
+    html.map = mapUrl || rooms || floors ? "map" : "";
 
     // Consumables
     const rows = CONSUMABLES.filter((x) => c[x.key])
