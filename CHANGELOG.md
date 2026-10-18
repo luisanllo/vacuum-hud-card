@@ -38,8 +38,8 @@
 - The editor's pre-fill: matches Roborock's English names for clean area and
   time, skips totals and "time left" sensors, prefers the vacuum's error sensor,
   and no longer picks Dreame's "mop pad installed" sensor as mop life.
-- Numbers and durations use Home Assistant's formatting (decimal comma,
-  "1 h 12 min").
+- Clean area uses Home Assistant's number formatting (the entity's decimals,
+  decimal comma), and clean time reads "2 h 10 min" instead of "130 min".
 
 ## 0.1.1
 

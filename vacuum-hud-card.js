@@ -223,7 +223,8 @@ const CONFIRM_MIN_MS = 400;
 // Text states that mean "no fault" on fault/error sensors (Roborock reports
 // `none`, Dreame `no_error`, binary sensors `off`).
 const OK_STATES = new Set(["", "off", "0", "ok", "none", "no_error", "no error", "normal", "unavailable", "unknown"]);
-const DURATION_UNITS = new Set(["s", "min", "h", "d"]);
+const DURATION_SECONDS = { s: 1, min: 60, h: 3600, d: 86400 };
+const DURATION_UNITS = new Set(Object.keys(DURATION_SECONDS));
 
 function detectLang(hass) {
   const raw =
@@ -284,6 +285,18 @@ function lifeKind(st) {
   if (unit === "%" || unit == null || unit === "") return "pct";
   if (isDuration(st)) return "time";
   return null;
+}
+
+// Clean time as "2 h 10 min" (Home Assistant itself shows "130min").
+function durationHtml(st) {
+  const factor = DURATION_SECONDS[st && st.attributes.unit_of_measurement];
+  const v = num(st);
+  if (!factor || v == null || !isDuration(st)) return null;
+  const mins = Math.round((v * factor) / 60);
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const unit = (u) => `<span class="stat-unit"> ${u}</span>`;
+  return h ? `${h}${unit("h")}${m ? ` ${m}${unit("min")}` : ""}` : `${m}${unit("min")}`;
 }
 
 function deviceName(hass, entityId) {
@@ -662,8 +675,8 @@ class VacuumHudCard extends HTMLElement {
     if (!st) return { v: "—", u: "" };
     const v = num(st);
     if (v == null) return { v: esc(this._hass.formatEntityState ? this._hass.formatEntityState(st) : st.state), u: "" };
-    // Home Assistant's own formatting: the user's decimals and number format,
-    // and durations as "1 h 12 min".
+    // Home Assistant's own formatting: the entity's decimals and the user's
+    // number format (decimal comma).
     if (this._hass.formatEntityStateToParts) {
       const parts = this._hass.formatEntityStateToParts(st);
       const join = (fn) => parts.filter(fn).map((p) => p.value).join("").trim();
@@ -852,8 +865,10 @@ class VacuumHudCard extends HTMLElement {
       `<div class="stat clickable" data-action="more-info" data-value="${esc(c[key])}"><div class="stat-val">${inner}</div><div class="stat-label">${esc(label)}</div></div>`;
     for (const [key, label] of [["clean_area", S.labels.area], ["clean_time", S.labels.time]]) {
       if (!c[key]) continue;
-      const f = this._fmt(this._st(key));
-      stats.push(statHtml(key, label, `${f.v}<span class="stat-unit"> ${f.u}</span>`));
+      const st = this._st(key);
+      const dur = durationHtml(st);
+      const f = dur ? null : this._fmt(st);
+      stats.push(statHtml(key, label, dur || `${f.v}<span class="stat-unit"> ${f.u}</span>`));
     }
     if (prob) {
       const bad = isOn(prob);
